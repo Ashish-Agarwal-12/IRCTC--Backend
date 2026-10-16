@@ -1,0 +1,234 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum CoachClass {
+  SL          // Sleeper
+  AC3         // 3rd AC
+  AC2         // 2nd AC
+  AC1         // 1st AC
+  CC          // Chair Car
+}
+
+enum Quota {
+  GENERAL
+  TATKAL
+  LADIES
+  SENIOR_CITIZEN
+}
+
+enum BookingStatus {
+  PENDING_PAYMENT
+  CONFIRMED
+  CANCELLED
+  EXPIRED
+}
+
+enum BerthType {
+  LOWER
+  MIDDLE
+  UPPER
+  SIDE_LOWER
+  SIDE_UPPER
+  WINDOW
+  AISLE
+}
+
+enum PassengerStatus {
+  CONFIRMED
+  RAC
+  WAITLISTED
+  CANCELLED
+}
+
+enum ScheduleStatus {
+  SCHEDULED
+  CHART_PREPARED
+  DEPARTED
+  CANCELLED
+}
+
+model Passenger {
+  id              String            @id @default(uuid())
+  bookingId       String
+  name            String
+  age             Int
+  gender          String
+  requestedBerth  BerthType?
+  status          PassengerStatus
+  racNumber       Int?
+  waitlistNumber  Int?
+
+  booking         Booking           @relation(fields: [bookingId], references: [id])
+  allocation      SeatAllocation?
+
+  @@index([bookingId])
+}
+
+model User {
+  id                    String    @id @default(uuid())
+  email                 String    @unique
+  phone                 String?   @unique
+  passwordHash          String  
+  firstName             String
+  lastName              String
+  role                  Role      @default(USER)
+  bookings              Booking[]
+  isEmailVerified       Boolean   @default(false)
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+}
+
+model Station {
+  id                    String    @id @default(uuid())
+  code                  String    @unique
+  name                  String    
+  city                  String
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  routeStops            RouteStop[]
+}
+
+model Train {
+  id                    String    @id @default(uuid())
+  number                String    @unique
+  name                  String    
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  routeStops            RouteStop[]
+  schedules             TrainSchedule[]  
+  coaches               Coach[]                 
+}
+
+model RouteStop {
+  id                    String    @id @default(uuid())
+  trainId               String    
+  stationId             String    
+  sequence              Int            // 1 = origin, 2, 3,  .... terminus
+  arrivalMinutes        Int?           // minutes after origin deaprture; null at origin
+  departureMinutes      Int?           // null at terminus
+  distanceKm            Int            // Cumulative from origin, for fare calculation
+  bookingsFrom          Booking[]      @relation("BookingFrom")
+  bookingsTo            Booking[]      @relation("BookingTo")
+
+  train     Train     @relation(fields: [trainId], references: [id])
+  station   Station   @relation(fields: [stationId], references: [id])
+
+  @@unique([trainId, sequence])
+  @@index([stationId])
+}
+
+
+model TrainSchedule {
+  id                    String          @id @default(uuid())
+  trainId               String    
+  journeyDate           DateTime        @db.Date    
+  status                ScheduleStatus  @default(SCHEDULED)
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+  chartPreparedAt       DateTime
+  inventories           SeatInventory[]
+  bookings              Booking[]
+  allocations           SeatAllocation[]
+  train Train @relation(fields: [trainId], references: [id])
+
+  @@unique([trainId, journeyDate])
+  @@index([journeyDate])
+}
+
+model Coach {
+  id                    String          @id @default(uuid())
+  trainId               String
+  code                  String // "B1", "A2", "S5"
+  class                 CoachClass
+
+  train Train @relation(fields: [trainId], references: [id])
+  seats Seat[]
+
+  @@unique([trainId, code])
+}
+
+
+model Seat {
+  id                    String            @id @default(uuid())
+  coachId               String
+  number                Int
+  berthType             BerthType
+  coach                 Coach             @relation(fields: [coachId], references: [id])
+  allocations           SeatAllocation[]
+  
+  @@unique([coachId, number])
+}
+
+model SeatInventory {
+  id                      String            @id @default(uuid())
+  scheduleId              String
+  class                   CoachClass
+  quota                   Quota
+  totalSeats              Int
+  availableSeats          Int
+  racCapacity             Int               @default(0)
+  racBooked               Int               @default(0)
+  waitlistIssued          Int               @default(0)           // next WL number = waitlistIssued + 1
+  updatedAt               DateTime          @updatedAt
+
+  schedule TrainSchedule @relation(fields: [scheduleId], references: [id])
+
+  @@unique([scheduleId, class, quota])
+}
+
+
+model Booking {
+  id              String                @id @default(uuid())
+  pnr             String                @unique
+  userId          String
+  scheduleId      String
+  fromStopId      String
+  toStopId        String
+  class           CoachClass
+  quota           Quota
+  status          BookingStatus         @default(PENDING_PAYMENT)
+  totalFare       Int                   // paise
+  holdExpiresAt   DateTime?
+  idempotencyKey  String                @unique
+  contactEmail    String
+  contactPhone    String
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+
+  user  User                @relation(fields: [userId], references: [id])
+
+  schedule  TrainSchedule   @relation(fields: [scheduleId], references: [id])
+
+  fromStop    RouteStop     @relation("BookingFrom", fields: [fromStopId], references:[id])
+  toStop      RouteStop     @relation("BookingTo", fields: [toStopId], references: [id])
+  passengers Passenger[]    
+  
+  @@index([userId])
+  @@index([scheduleId])
+  @@index([status, holdExpiresAt])
+}
+
+model SeatAllocation {
+  id          String   @id @default(uuid())
+  scheduleId  String
+  seatId      String
+  passengerId String   @unique
+  createdAt   DateTime @default(now())
+
+  schedule  TrainSchedule @relation(fields: [scheduleId], references: [id])
+  seat      Seat          @relation(fields: [seatId], references: [id])
+  passenger Passenger     @relation(fields: [passengerId], references: [id])
+
+  @@unique([scheduleId, seatId])
+}
