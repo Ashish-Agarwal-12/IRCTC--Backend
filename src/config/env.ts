@@ -30,6 +30,10 @@ export const envSchema = z.object({
     RAZORPAY_KEY_SECRET: z.string().min(1).optional(),
     // Set in the Razorpay dashboard when adding the webhook. Without it, POST /payments/webhook answers 503.
     RAZORPAY_WEBHOOK_SECRET: z.string().min(1).optional(),
+
+    // Bearer token Prometheus must send to GET /metrics. Optional in development; without it,
+    // /metrics isn't served in production at all.
+    METRICS_TOKEN: z.string().min(16, "METRICS_TOKEN must be at least 16 characters").optional(),
 }).refine((e) => !!e.RAZORPAY_KEY_ID === !!e.RAZORPAY_KEY_SECRET, {
     message: "Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET together",
     path: ["RAZORPAY_KEY_SECRET"],

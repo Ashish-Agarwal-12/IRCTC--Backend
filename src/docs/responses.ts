@@ -297,3 +297,17 @@ export const chartResponse = z.strictObject({
     }),
 });
 
+// --------------------------------------------------------------------------- readiness
+
+const jobCheck = z.strictObject({ ok: z.boolean(), lastSuccessAt: z.iso.datetime().nullable(), lastFailureAt: z.iso.datetime().nullable() });
+
+export const readinessResponse = z
+    .strictObject({
+        status: z.enum(["ok", "degraded", "down"]),
+        checks: z.strictObject({
+            database: z.strictObject({ ok: z.boolean(), latencyMs: z.number().int(), error: z.string().optional() }),
+            jobs: z.record(z.string(), jobCheck).meta({ description: "Background jobs started in this process, by name" }),
+        }),
+    })
+    .meta({ id: "Readiness" });
+

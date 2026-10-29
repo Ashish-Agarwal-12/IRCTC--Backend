@@ -20,6 +20,7 @@ import { departureInstant } from "../trains/search.service.js";
 import { processRefund } from "../payments/refunds.js";
 import { TX_OPTIONS, cancelPassengersLocked } from "./cancellation.service.js";
 import { lockClassInventory } from "./inventory.js";
+import { chartsPrepared, passengersCancelled } from "../../shared/metrics.js";
 
 export const CHART_HOURS_BEFORE_DEPARTURE = 4;
 
@@ -70,6 +71,8 @@ export async function prepareChart(scheduleId: string, now = new Date()) {
         }, TX_OPTIONS);
     }
 
+    chartsPrepared.inc();
+    passengersCancelled.inc({ reason: "chart" }, cancelledPassengers);
     for (const id of refundIds) await processRefund(id); // failures are retried by the reconciliation job
     return { scheduleId, preparedAt: now, cancelledPassengers, affectedBookings: affectedBookings.size };
 }

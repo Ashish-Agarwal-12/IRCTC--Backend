@@ -14,6 +14,7 @@ import { processRefund } from "../payments/refunds.js";
 import { bookingInclude, toBookingView } from "./bookings.service.js";
 import { lockClassInventory, releasePassengers } from "./inventory.js";
 import { cancellationRefund } from "./refund-rules.js";
+import { passengersCancelled } from "../../shared/metrics.js";
 
 type Tx = Prisma.TransactionClient;
 
@@ -101,6 +102,7 @@ export async function cancelBooking(userId: string, pnr: string, positions: numb
         return cancelPassengersLocked(tx, booking, targets.map((p) => p.id), "Cancelled by you", now);
     }, TX_OPTIONS);
 
+    passengersCancelled.inc({ reason: "user" }, result.lines.length);
     // Pay it out now if Razorpay answers; otherwise the reconciliation job retries.
     const processed = result.refundId ? await processRefund(result.refundId) : false;
     const booking = await prisma.booking.findUniqueOrThrow({ where: { id: found.id }, include: bookingInclude });

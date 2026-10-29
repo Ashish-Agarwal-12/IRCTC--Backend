@@ -34,7 +34,7 @@ export interface Operation {
     params?: z.ZodObject;
     headers?: z.ZodObject;
     // Success responses (and endpoint-specific errors). Standard errors are added automatically.
-    responses: Record<number, { description: string; schema?: z.ZodType; html?: boolean; pdf?: boolean }>;
+    responses: Record<number, { description: string; schema?: z.ZodType; html?: boolean; pdf?: boolean; text?: boolean }>;
 }
 
 const error = (description: string) => ({ description, schema: R.errorResponse });
@@ -44,6 +44,23 @@ export const operations: Operation[] = [
     {
         method: "get", path: "/health", tag: "System", summary: "Health check",
         responses: { 200: { description: "The server is up", schema: R.healthResponse } },
+    },
+    {
+        method: "get", path: "/health/ready", tag: "System", summary: "Readiness: database and background jobs",
+        description:
+            "503 when the database is unreachable (take this instance out of the load balancer). `degraded` (still 200) when " +
+            "a background job has not succeeded for 3 of its intervals.",
+        responses: {
+            200: { description: "Ready (`ok` or `degraded`)", schema: R.readinessResponse },
+            503: { description: "Database unreachable", schema: R.readinessResponse },
+        },
+    },
+    {
+        method: "get", path: "/metrics", tag: "System", summary: "Prometheus metrics",
+        description:
+            "Text exposition format for Prometheus. With `METRICS_TOKEN` set, send it as `Authorization: Bearer ...`. " +
+            "Not served in production without a token. Alert rules: `ops/prometheus/alerts.yml`.",
+        responses: { 200: { description: "Metrics", text: true }, 401: error("Wrong or missing metrics token") },
     },
 
     // ------------------------------------------------------------------- auth

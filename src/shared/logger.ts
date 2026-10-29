@@ -3,9 +3,12 @@
 
 import { pino } from "pino";
 import { env } from "../config/env.js";
+import { logFields } from "./context.js";
 
 export const logger = pino({
     level: env.NODE_ENV === "test" ? "silent" : "info",
+    // Every line gets the current requestId / traceId (HTTP) or job / runId (background jobs).
+    mixin: logFields,
     // Requirement: never log PII. Strip credentials and contact details even if they end up in a log call.
     redact: {
         paths: [
