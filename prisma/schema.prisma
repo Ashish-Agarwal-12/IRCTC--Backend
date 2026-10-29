@@ -17,6 +17,16 @@ enum TokenPurpose {
   PASSWORD_RESET
 }
 
+enum Weekday {
+  MON
+  TUE
+  WED
+  THU
+  FRI
+  SAT
+  SUN
+}
+
 enum CoachClass {
   SL          // Sleeper
   AC3         // 3rd AC
@@ -116,6 +126,8 @@ model Train {
   id                    String    @id @default(uuid())
   number                String    @unique
   name                  String    
+  runningDays           Weekday[]                 // days the train leaves its origin station
+  departureMinutes      Int                       // origin departure, minutes after midnight (16:55 = 1015)
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
   routeStops            RouteStop[]
@@ -278,4 +290,13 @@ model VerificationToken {
   user          User          @relation(fields: [userId], references: [id])
 
   @@index([userId])
+}
+
+// Fare per class: baseFare + perKm * distance. Amounts in paise (integers), never floating-point
+// rupees: 0.1 + 0.2 !== 0.3 in JavaScript, and money must add up exactly.
+model FareRule {
+  class          CoachClass  @id
+  baseFare       Int                // paise
+  perKm          Int                // paise per km
+  updatedAt      DateTime    @updatedAt
 }

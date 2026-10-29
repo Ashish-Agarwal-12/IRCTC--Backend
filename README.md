@@ -25,7 +25,7 @@ TypeScript · Express 5 · PostgreSQL 16 · Prisma 7 (with `@prisma/adapter-pg`)
    ```bash
    npx prisma migrate dev
    ```
-5. **Create the admin account** from `ADMIN_EMAIL` / `ADMIN_PASSWORD` in `.env`:
+5. **Seed the database**: the admin account (from `ADMIN_EMAIL` / `ADMIN_PASSWORD` in `.env`), 18 stations, 4 sample trains with coaches, fares, and 60 days of schedules. Safe to re-run:
    ```bash
    npx prisma db seed
    ```
@@ -45,9 +45,11 @@ TypeScript · Express 5 · PostgreSQL 16 · Prisma 7 (with `@prisma/adapter-pg`)
 | `npm run dev` | Runs `src/server.ts` with tsx and restarts on file changes |
 | `npm run build` | Compiles TypeScript to `dist/` |
 | `npm start` | Runs the compiled server from `dist/` |
+| `npm test` | Runs the test suite once (needs Postgres running; uses a separate `irctc_test` database) |
+| `npm run test:watch` | Re-runs tests on every file change |
 | `npx prisma generate` | Regenerates the Prisma client after a schema change or a fresh checkout |
 | `npx prisma migrate dev` | Creates and applies migrations in development |
-| `npx prisma db seed` | Creates or updates the admin user (`prisma/seed.ts`) |
+| `npx prisma db seed` | Seeds admin, stations, trains, fares and schedules (`prisma/seed.ts`, data in `prisma/seed-data.ts`) |
 | `npx prisma studio` | Opens a browser UI for the database |
 
 ## Environment variables
@@ -73,7 +75,8 @@ Validated at startup by [src/config/env.ts](src/config/env.ts). The server refus
 ```
 prisma/
   schema.prisma          # data model
-  seed.ts                # creates the admin user
+  seed.ts                # seeds admin + sample catalog (re-runnable)
+  seed-data.ts           # sample stations, trains, fares
   migrations/            # SQL migrations (review before applying!)
 prisma.config.ts         # Prisma 7 CLI config
 src/
@@ -87,7 +90,13 @@ src/
     auth.schemas.ts      # Zod request schemas + inferred types
     tokens.ts            # JWT sign/verify, random tokens, token hashing
     auth.pages.ts        # HTML pages opened from email links (stand-in for a frontend)
+  modules/stations/      # station search (public) + create/update (admin)
+  modules/trains/
+    trains.service.ts    # trains, routes, coaches
+    schedules.service.ts # dated schedules + seat inventory per class/quota
+    seat-layout.ts       # berth layouts per coach class (SL, 3A, 2A, 1A, CC)
   shared/
+    validation.ts        # shared Zod pieces: pagination, ids, station codes, HH:mm, dates
     error.ts             # AppError and subclasses
     error-handler.ts     # 404 + central error handler
     logger.ts            # shared Pino logger with PII redaction
@@ -98,6 +107,7 @@ src/
       rate-limit.ts      # createRateLimiter(limit, windowMs)
   types/express.d.ts     # adds req.user to Express's Request type
   generated/prisma/      # generated Prisma client (git-ignored)
+test/                    # Vitest + Supertest suites, helpers, test-DB setup
 docs/requirements.md     # requirements, design, roadmap, status
 ```
 
@@ -126,6 +136,15 @@ docs/requirements.md     # requirements, design, roadmap, status
 | `POST` | `/auth/reset-password` | `{ token, password }` → 204, revokes all sessions |
 | `GET` | `/auth/me` | Auth required → 200 `{ user }` |
 | `GET` | `/admin/ping` | Admin only; placeholder to check role guards |
+| `GET` | `/stations?q=del` | Station autocomplete by code, name or city (max 10; exact code first) |
+| `GET` | `/trains?page=1&pageSize=20` | Paginated train list |
+| `GET` | `/trains/:number` | Train with route (clock times + day offset) and coaches |
+| `POST` | `/admin/stations` | `{ code, name, city }` → 201; 409 if the code exists |
+| `PATCH` | `/admin/stations/:id` | `{ name?, city? }` (code can't change) |
+| `POST` | `/admin/trains` | `{ number, name, runningDays: ["MON", ...], departureTime: "16:55" }` → 201 |
+| `PUT` | `/admin/trains/:id/route` | `{ stops: [{ stationCode, arrivalMinutes, departureMinutes, distanceKm }] }`. Whole route; times are minutes after origin departure. 409 once bookings exist. |
+| `PUT` | `/admin/trains/:id/coaches` | `{ coaches: [{ code: "B1", class: "AC3" }] }`. Seats are generated from standard layouts. 409 once schedules exist. |
+| `POST` | `/admin/trains/:id/schedules` | `{ from, to }` (YYYY-MM-DD, at most 120 days). Creates schedules on running days plus seat inventory; re-runnable. |
 | `GET` | `/verify-email`, `/reset-password` | HTML pages opened from email links (`#token=...`); a button or form on the page calls the API |
 
 ### Trying the API from Windows PowerShell

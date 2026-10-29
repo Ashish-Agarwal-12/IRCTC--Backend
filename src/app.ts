@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
-import express from "express";
+import express, { Router } from "express";
 import { pinoHttp } from "pino-http";
 import { logger, redactUrl } from "./shared/logger.js";
 import { errorHandler, notFoundHandler } from "./shared/error-handler.js";
 import { authenticate, requireRole } from "./shared/middleware/authenticate.js";
 import { authRouter } from "./modules/auth/auth.routes.js";
 import { authPagesRouter } from "./modules/auth/auth.pages.js";
+import { adminStationsRouter, stationsRouter } from "./modules/stations/stations.routes.js";
+import { adminTrainsRouter, trainsRouter } from "./modules/trains/trains.routes.js";
 
 export function buildApp() {
     const app = express();
@@ -39,10 +41,20 @@ export function buildApp() {
     app.use("/auth", authRouter);
     app.use(authPagesRouter); // GET /verify-email and /reset-password, opened from email links
 
-    // Placeholder admin route to prove role checks work; real admin routes arrive with the catalog.
-    app.get("/admin/ping", authenticate, requireRole("ADMIN"), (_req, res) => {
+    // Public catalog
+    app.use("/stations", stationsRouter);
+    app.use("/trains", trainsRouter);
+
+    // Admin: one router, guarded once. Everything mounted inside it needs an ADMIN token, so no
+    // admin route can accidentally be left unprotected.
+    const admin = Router();
+    admin.use(authenticate, requireRole("ADMIN"));
+    admin.get("/ping", (_req, res) => {
         res.json({ status: "ok", admin: true });
     });
+    admin.use("/stations", adminStationsRouter);
+    admin.use("/trains", adminTrainsRouter);
+    app.use("/admin", admin);
 
     // Must be registered after every route: the 404 catches anything unmatched,
     // and the error handler (4 args) catches anything thrown or passed to next(err).

@@ -191,8 +191,9 @@ _Last updated: 2026-10-29_
 | 1. Domain model and API contracts | Done: initial schema and migrations in `prisma/` |
 | 2. Project setup | Done, except Redis/BullMQ: containers run via Docker Compose, but no client library is installed or used yet |
 | 3. Authentication and authorization | Done (see 8.3) |
-| 4. Stations, routes, trains, schedules | Next |
-| 5–11 | Not started |
+| 4. Stations, routes, trains, schedules | Done (see 8.4); automated test suite added |
+| 5. Train search and availability | Next |
+| 6–11 | Not started |
 
 ### 8.1 Foundations in place (Phase 0)
 
@@ -212,6 +213,7 @@ _Last updated: 2026-10-29_
 | `20261016115023_init_catalog` | Users, stations, trains, route stops, schedules |
 | `20261016124540_init_catalog` | Coaches, seats, seat inventory, bookings, passengers, seat allocations |
 | `20261029082133_auth_tokens` | `TokenPurpose` enum, `RefreshToken` and `VerificationToken` tables |
+| `20261029090011_catalog_scheduling` | `Weekday` enum; `Train.runningDays` and `Train.departureMinutes`; `FareRule` table. Hand-edited so existing trains get placeholder values (00:00, daily) before the defaults are dropped. |
 | `20261029120000_catalog_fixes` | `Gender` enum, converted in place with `USING UPPER(...)` so existing rows are kept. Prisma's generated SQL dropped the column instead, so it was hand-edited. Also makes `chartPreparedAt` nullable. |
 
 > Always read generated migration SQL before applying it: a column type change can be generated as drop-and-recreate, which deletes data.
@@ -234,3 +236,28 @@ _Last updated: 2026-10-29_
 | Email links | Link to `/verify-email#token=…` or `/reset-password#token=…`. A static page reads the token from the fragment, removes it from the address bar, and POSTs it only when the user clicks or submits. Pages send `Referrer-Policy: no-referrer` and `Cache-Control: no-store`. | The fragment never reaches the server, so tokens can't land in access logs, proxies or Referer headers. Email scanners that pre-open links can't use up the token, because opening the page does nothing on its own. A real frontend would replace these pages. |
 | Secrets in logs | Pino redacts auth and cookie headers, `referer`, `req.query.token` and body-like `*.token` / `*.password` fields; `redactUrl` scrubs `?token=` from logged URLs | Defense in depth for old-style or hand-typed links. |
 | Email delivery | nodemailer → Mailpit in dev; fire-and-forget with error logging | **TODO (BullMQ phase):** move to a queue so failed emails are retried and survive restarts. |
+
+### 8.4 Catalog (Phase 2)
+
+| Decision | Choice | Why |
+|---|---|---|
+| Time model | `Train.departureMinutes` (minutes after midnight) + `RouteStop` times as minutes after origin departure | Overnight runs are plain addition, with no dates or midnight wrap in the data. The API formats them as `{ time: "08:50", day: 2 }`. |
+| Running days | `Weekday[]` on `Train`; a schedule's `journeyDate` is the day it leaves the origin | Matches how Indian Railways defines a train's date. |
+| Route edits | `PUT` replaces the whole stop list in one transaction; array order = sequence | No gaps or duplicate sequence numbers are possible, and readers never see a half-edited route. Cross-stop rules (times and distances increase, no repeated stations, origin/terminus shape) live in a Zod `superRefine` with per-field error paths. Locked once bookings exist. |
+| Coach layouts | Admin sends `{ code, class }`; seats come from `seat-layout.ts` (SL/3A 72 in bays of 8, 2A 48, 1A 24, CC 78 at 3+2) | One source of truth for berth types, which berth preferences in booking depend on. Locked once schedules exist, because inventory was counted from them. |
+| Inventory split | Per class: TATKAL 25%, LADIES 4%, SENIOR_CITIZEN 6%, GENERAL the remainder; in SL/3A/2A, 5% of GENERAL berths are held for RAC (2 passengers each) | **Simplification:** real quotas vary by train. Totals always add up to the coach berths (unit-tested). |
+| Schedule generation | `createMany({ skipDuplicates })` on unique `(trainId, journeyDate)`, then inventory for schedules that have none; max 120 days per call; no past dates | Idempotent and safe if run twice at once: the unique index, not a prior check, prevents duplicates. |
+| Money | `FareRule` per class, `baseFare + perKm × distance`, in paise | Integers avoid floating-point rounding. Seeded; no admin endpoint yet. |
+| Admin routing | One `/admin` router with `authenticate` + `requireRole("ADMIN")` applied once | No admin route can be mounted without the guard. |
+| Station search | `startsWith` on code, case-insensitive `contains` on name/city, max 10, exact code first | Good enough for a few thousand stations. Move to a `pg_trgm` index if search gets slow. |
+
+### 8.5 Testing
+
+- **Stack:** Vitest + Supertest, run with `npm test`. Supertest calls `buildApp()` in-process, with no port and no running server.
+- **Database:** a separate `irctc_test` database, migrated once per run (`prisma migrate deploy` in `test/global-setup.ts`) and truncated before each test.
+- **Isolation:** test files run serially because they share that database. Mail is mocked with `vi.mock`, so tests read tokens from the "sent" email. Rate limiters are off under `NODE_ENV=test`, except in the limiter's own test.
+- **Coverage:**
+  - Auth: registration, verification, login, rotation and reuse detection, concurrent refresh, reset, role guards.
+  - Rate limiting.
+  - Seat layouts and quota maths.
+  - Catalog CRUD, route validation, and schedule generation (running days, idempotency, layout lock).
