@@ -1,7 +1,8 @@
 import type { RequestHandler } from "express";
 import { paginationSchema } from "../../shared/validation.js";
 import * as bookingsService from "./bookings.service.js";
-import { createBookingSchema, idempotencyHeaderSchema, pnrParamSchema } from "./bookings.schemas.js";
+import { cancelQuerySchema, createBookingSchema, idempotencyHeaderSchema, pnrParamSchema } from "./bookings.schemas.js";
+import * as cancellationService from "./cancellation.service.js";
 
 // req.user! : these routes sit behind `authenticate`, so the user is always set here.
 
@@ -31,4 +32,10 @@ export const ticket: RequestHandler = async (req, res) => {
         "Cache-Control": "private, no-store", // personal data: no shared caches, and always the current status
     });
     res.type("application/pdf").send(pdf);
+};
+
+export const cancel: RequestHandler = async (req, res) => {
+    const { pnr } = pnrParamSchema.parse(req.params);
+    const { passengers } = cancelQuerySchema.parse(req.query);
+    res.json(await cancellationService.cancelBooking(req.user!.id, pnr, passengers));
 };

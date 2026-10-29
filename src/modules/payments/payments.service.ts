@@ -19,7 +19,7 @@ import { bookingInclude, toBookingView } from "../bookings/bookings.service.js";
 import { GatewayRejectedError, fromRazorpay, paymentGateway, type GatewayPayment } from "./gateway.js";
 import { isValidCheckoutSignature, isValidWebhookSignature } from "./signatures.js";
 import { webhookEventSchema, type VerifyPaymentInput } from "./payments.schemas.js";
-import { enqueueNotification } from "../notifications/outbox.js";
+import { enqueueNotification } from "../notifications/enqueue.js";
 
 // --------------------------------------------------------------------------- 1. order
 

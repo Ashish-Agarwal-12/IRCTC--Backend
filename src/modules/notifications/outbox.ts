@@ -5,30 +5,25 @@
 // confirmed); commit first and the server might crash before sending (a paid booking, no ticket).
 //
 // The fix: the email is *written down* as an OutboxMessage row inside the same transaction that
-// confirms the booking (enqueueNotification). Both commit, or neither does. This worker then reads
+// confirms the booking (enqueueNotification in enqueue.ts). Both commit, or neither does. This worker then reads
 // the rows and sends them, retrying with backoff until SMTP accepts.
 //
 // Delivery is at-least-once: if the server dies after SMTP accepted but before the row is marked
 // SENT, the email goes again. A duplicate ticket email is a far smaller problem than a missing one.
 
-import type { NotificationType, Prisma } from "../../generated/prisma/client.js";
+import type { NotificationType } from "../../generated/prisma/client.js";
 import { logger } from "../../shared/logger.js";
 import { prisma } from "../../shared/prisma.js";
 import { sendMail, type Attachment } from "../../shared/mailer.js";
 import { startIntervalJob } from "../../shared/interval-job.js";
-import { bookingInclude, ticketPdfFor } from "../bookings/bookings.service.js";
-import { rupees } from "../bookings/ticket.js";
+import { bookingInclude, ticketPdfFor, toBookingView } from "../bookings/bookings.service.js";
+import { passengerStatus, rupees } from "../bookings/ticket.js";
 
 const BATCH = 20;
 export const MAX_ATTEMPTS = 8;
 // While a worker is sending, the row's nextAttemptAt is pushed this far ahead, so no other worker
 // picks it up. If the worker dies mid-send, the lease runs out and someone else retries it.
 const LEASE_MS = 5 * 60_000;
-
-// Call inside the transaction that makes the change the email reports.
-export function enqueueNotification(tx: Prisma.TransactionClient, type: NotificationType, bookingId: string) {
-    return tx.outboxMessage.create({ data: { type, bookingId } });
-}
 
 // 30 s, 1 min, 2 min, ... capped at 1 hour.
 export const backoffMs = (attempts: number) => Math.min(30_000 * 2 ** (attempts - 1), 60 * 60_000);
@@ -39,7 +34,7 @@ export async function deliverOutbox(now = new Date()): Promise<number> {
     // the same moment, each skips the rows the other has locked instead of waiting, so no row is
     // claimed twice. The claim itself (attempts + 1, lease) commits immediately: no transaction
     // stays open while we talk to the SMTP server.
-    const claimed = await prisma.$queryRaw<{ id: string; type: NotificationType; bookingId: string; attempts: number }[]>`
+    const claimed = await prisma.$queryRaw<{ id: string; type: NotificationType; bookingId: string; attempts: number; payload: unknown }[]>`
         UPDATE "OutboxMessage"
         SET attempts = attempts + 1, "nextAttemptAt" = ${new Date(now.getTime() + LEASE_MS)}
         WHERE id IN (
@@ -49,12 +44,12 @@ export async function deliverOutbox(now = new Date()): Promise<number> {
             LIMIT ${BATCH}
             FOR UPDATE SKIP LOCKED
         )
-        RETURNING id, type, "bookingId", attempts`;
+        RETURNING id, type, "bookingId", attempts, payload`;
 
     let sent = 0;
     for (const message of claimed) {
         try {
-            const email = await compose(message.type, message.bookingId);
+            const email = await compose(message.type, message.bookingId, message.payload);
             if (email) await sendMail(email.to, email.subject, email.text, email.attachments);
             await prisma.outboxMessage.update({
                 where: { id: message.id },
@@ -82,7 +77,7 @@ interface Email { to: string; subject: string; text: string; attachments: Attach
 
 // What each notification says. Built at send time from the current booking, so a retry an hour
 // later still sends correct details. Returns null if the email no longer applies.
-async function compose(type: NotificationType, bookingId: string): Promise<Email | null> {
+async function compose(type: NotificationType, bookingId: string, payload: unknown): Promise<Email | null> {
     const booking = await prisma.booking.findUniqueOrThrow({
         where: { id: bookingId },
         include: { ...bookingInclude, payments: { where: { status: { in: ["CAPTURED", "REFUND_PENDING", "REFUNDED"] } } } },
@@ -115,13 +110,55 @@ async function compose(type: NotificationType, bookingId: string): Promise<Email
         };
     }
 
-    // REFUND_INITIATED: paid after the hold had already been released.
+    if (type === "BOOKING_CANCELLED") {
+        const details = payload as { reason: string; refund: number; passengers: { position: number; name: string; refund: number; rule: string }[] };
+        return {
+            to: booking.contactEmail,
+            subject: `Cancellation · PNR ${booking.pnr}`,
+            text: [
+                `${details.reason} on PNR ${booking.pnr} (${train}, ${route}).`,
+                ``,
+                ...details.passengers.map((p) => `  ${p.position}. ${p.name}: refund ${rupees(p.refund)} (${p.rule})`),
+                ``,
+                details.refund > 0
+                    ? `Total refund: ${rupees(details.refund)}, to your original payment method.`
+                    : `No refund is due under the cancellation rules.`,
+                booking.status === "CANCELLED" ? `The booking is now fully cancelled.` : `The other passengers on this booking are unaffected.`,
+                `(Test mode: no real money moved.)`,
+            ].join("\n"),
+            attachments: [],
+        };
+    }
+
+    if (type === "STATUS_CHANGED") {
+        if (booking.status !== "CONFIRMED") return null;
+        const captured = booking.payments.filter((p) => p.status === "CAPTURED");
+        const view = toBookingView(booking);
+        return {
+            to: booking.contactEmail,
+            subject: `Status update · PNR ${booking.pnr}`,
+            text: [
+                `Good news: passengers on PNR ${booking.pnr} (${train}, ${route}) have moved up after cancellations.`,
+                ``,
+                ...view.passengers.map((p) => `  ${p.position}. ${p.name}: ${passengerStatus(p)}`),
+                ``,
+                `Your updated e-ticket is attached.`,
+            ].join("\n"),
+            attachments: [{
+                filename: `ticket-${booking.pnr}.pdf`,
+                content: await ticketPdfFor({ ...booking, payments: captured }),
+                contentType: "application/pdf",
+            }],
+        };
+    }
+
+    // REFUND_INITIATED: paid after the hold had already been released (or the unpaid booking was cancelled).
     return {
         to: booking.contactEmail,
         subject: `Refund initiated · PNR ${booking.pnr}`,
         text: [
             `We received your payment of ${rupees(booking.totalFare)} for PNR ${booking.pnr} (${train}, ${route}),`,
-            `but it arrived after your 10-minute seat hold had ended and the seats were released.`,
+            `but it arrived after your seat hold had ended (or the booking was cancelled), so the seats are no longer yours.`,
             ``,
             `The full amount is being refunded to your original payment method. No booking was made.`,
             `(Test mode: no real money moved.)`,

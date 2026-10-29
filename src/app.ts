@@ -13,6 +13,7 @@ import { authPagesRouter } from "./modules/auth/auth.pages.js";
 import { adminStationsRouter, stationsRouter } from "./modules/stations/stations.routes.js";
 import { adminTrainsRouter, trainsRouter } from "./modules/trains/trains.routes.js";
 import { bookingsRouter } from "./modules/bookings/bookings.routes.js";
+import { adminChartRouter } from "./modules/bookings/chart.routes.js";
 import { paymentsRouter } from "./modules/payments/payments.routes.js";
 
 // Where each router is mounted. Kept as data (rather than a list of app.use calls) so the
@@ -34,6 +35,7 @@ export const adminMounts: { path: string; router: Router }[] = [
     { path: "/", router: adminSystemRouter },
     { path: "/stations", router: adminStationsRouter },
     { path: "/trains", router: adminTrainsRouter },
+    { path: "/schedules", router: adminChartRouter },
 ];
 
 export function buildApp() {

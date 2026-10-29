@@ -12,4 +12,5 @@ bookingsRouter.use(authenticate);
 bookingsRouter.post("/", bookingLimiter, bookings.create);
 bookingsRouter.get("/", bookings.list);
 bookingsRouter.get("/:pnr", bookings.getByPnr);
+bookingsRouter.delete("/:pnr", bookingLimiter, bookings.cancel);
 bookingsRouter.get("/:pnr/ticket.pdf", bookings.ticket);

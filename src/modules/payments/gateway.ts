@@ -27,7 +27,9 @@ export interface PaymentGateway {
     fetchPayment(paymentId: string): Promise<GatewayPayment>;
     listOrderPayments(orderId: string): Promise<GatewayPayment[]>;
     capturePayment(paymentId: string, amount: number): Promise<GatewayPayment>;
-    refundPayment(paymentId: string): Promise<{ id: string }>;
+    // No amount: refund in full. `notes` are stored with the refund at Razorpay and come back in listRefunds.
+    refundPayment(paymentId: string, options?: { amount?: number; notes?: Record<string, string> }): Promise<{ id: string }>;
+    listRefunds(paymentId: string): Promise<{ id: string; amount: number; notes: Record<string, string> }[]>;
 }
 
 // 503: the gateway is down or slow. Booking and payment rows are left untouched, so the user can retry.
@@ -86,8 +88,12 @@ function razorpayGateway(keyId: string, keySecret: string): PaymentGateway {
             (await call<{ items: RazorpayPayment[] }>("GET", `/orders/${encodeURIComponent(orderId)}/payments`)).items.map(fromRazorpay),
         capturePayment: async (id, amount) =>
             fromRazorpay(await call<RazorpayPayment>("POST", `/payments/${encodeURIComponent(id)}/capture`, { amount, currency: "INR" })),
-        // No amount: refund in full.
-        refundPayment: (id) => call<{ id: string }>("POST", `/payments/${encodeURIComponent(id)}/refund`, {}),
+        refundPayment: (id, { amount, notes } = {}) =>
+            call<{ id: string }>("POST", `/payments/${encodeURIComponent(id)}/refund`, { ...(amount && { amount }), ...(notes && { notes }) }),
+        listRefunds: async (id) =>
+            (await call<{ items: { id: string; amount: number; notes: Record<string, string> | [] }[] }>("GET", `/payments/${encodeURIComponent(id)}/refunds`))
+                // Razorpay sends an empty array, not {}, when there are no notes.
+                .items.map((r) => ({ id: r.id, amount: r.amount, notes: Array.isArray(r.notes) ? {} : r.notes })),
     };
 }
 

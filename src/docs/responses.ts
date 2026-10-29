@@ -9,7 +9,7 @@
 import "zod-openapi"; // adds OpenAPI fields (id, example, ...) to the type of Zod's .meta()
 import { z } from "zod";
 import {
-    BerthType, BookingStatus, CoachClass, Gender, PassengerStatus, Quota, Role, ScheduleStatus, Weekday,
+    BerthType, BookingStatus, CoachClass, Gender, PassengerStatus, Quota, RefundStatus, Role, ScheduleStatus, Weekday,
 } from "../generated/prisma/client.js";
 import { AVAILABILITY_STATUSES } from "../modules/trains/availability.js";
 
@@ -218,7 +218,13 @@ export const booking = z
                     .nullable()
                     .meta({ description: "Set for CONFIRMED passengers; RAC and waitlisted passengers get one later" }),
             }),
-        ),
+        ).meta({ description: "racNumber / waitlistNumber are current positions: they move up as others cancel" }),
+        refunds: z.array(z.strictObject({
+            amount: z.number().int().meta({ description: "Paise" }),
+            reason: z.string(),
+            status: z.enum(RefundStatus).meta({ description: "PENDING: owed, being issued. PROCESSED: issued at the payment gateway." }),
+            createdAt: z.iso.datetime(),
+        })),
         createdAt: z.iso.datetime(),
     })
     .meta({ id: "Booking" });
@@ -259,3 +265,35 @@ export const verifyPaymentResponse = z
     .meta({ id: "VerifyPaymentResult" });
 
 export const webhookResponse = z.strictObject({ handled: z.enum(["processed", "ignored", "duplicate"]) });
+
+// --------------------------------------------------------------------------- cancellations
+
+export const cancellationResponse = z
+    .strictObject({
+        booking,
+        cancellation: z.strictObject({
+            passengers: z.array(z.strictObject({
+                position: z.number().int(),
+                name: z.string(),
+                previousStatus: z.enum(PassengerStatus),
+                refund: z.number().int().meta({ description: "Paise" }),
+                charge: z.number().int().meta({ description: "Cancellation charge, paise" }),
+                rule: z.string().meta({ example: "More than 48 h before departure: flat charge" }),
+            })),
+            refund: z
+                .strictObject({ amount: z.number().int(), status: z.enum(RefundStatus) })
+                .nullable()
+                .meta({ description: "null when nothing is due (unpaid, or no refund under the rules)" }),
+        }),
+    })
+    .meta({ id: "CancellationResult" });
+
+export const chartResponse = z.strictObject({
+    chart: z.strictObject({
+        scheduleId: z.string(),
+        preparedAt: z.iso.datetime(),
+        cancelledPassengers: z.number().int().meta({ description: "Waitlisted passengers cancelled" }),
+        affectedBookings: z.number().int(),
+    }),
+});
+

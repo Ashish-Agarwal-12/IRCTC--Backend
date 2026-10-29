@@ -73,6 +73,13 @@ enum PaymentStatus {
 enum NotificationType {
   BOOKING_CONFIRMED   // ticket PDF attached
   REFUND_INITIATED    // paid after the hold ran out; the money is going back
+  BOOKING_CANCELLED   // some or all passengers cancelled (by the user, or waitlisted at chart time)
+  STATUS_CHANGED      // passengers moved up: WL → RAC, RAC → CNF (fresh ticket attached)
+}
+
+enum RefundStatus {
+  PENDING     // owed; recorded in the cancellation's transaction
+  PROCESSED   // issued at the gateway
 }
 
 enum OutboxStatus {
@@ -110,8 +117,8 @@ model Passenger {
   gender          Gender
   requestedBerth  BerthType?
   status          PassengerStatus
-  racNumber       Int?
-  waitlistNumber  Int?
+  racNumber       Int?              // current position in the RAC queue (1 = next to get a berth); null unless RAC
+  waitlistNumber  Int?              // current position on the waitlist; null unless WAITLISTED
 
   booking         Booking           @relation(fields: [bookingId], references: [id])
   allocation      SeatAllocation?
@@ -227,7 +234,7 @@ model SeatInventory {
   availableSeats          Int
   racCapacity             Int               @default(0)
   racBooked               Int               @default(0)
-  waitlistIssued          Int               @default(0)           // next WL number = waitlistIssued + 1
+  waitlistBooked          Int               @default(0)           // waitlisted passengers now; next WL number = waitlistBooked + 1
   updatedAt               DateTime          @updatedAt
 
   schedule TrainSchedule @relation(fields: [scheduleId], references: [id])
@@ -263,6 +270,7 @@ model Booking {
   passengers Passenger[]    
   payments   Payment[]
   outbox     OutboxMessage[]
+  refunds    Refund[]
   
   @@index([userId])
   @@index([scheduleId])
@@ -283,9 +291,31 @@ model Payment {
   updatedAt         DateTime        @updatedAt
 
   booking           Booking         @relation(fields: [bookingId], references: [id])
+  refunds           Refund[]
 
   @@index([bookingId])
   @@index([status, createdAt])                // the reconciliation job's scan
+}
+
+// Money owed back after a cancellation (partial or full). Separate from Payment's own
+// REFUND_PENDING, which covers a whole payment that couldn't be used at all.
+model Refund {
+  id               String        @id @default(uuid())   // also sent to Razorpay in the refund's notes, to make retries safe
+  bookingId        String
+  paymentId        String                                // our Payment row (the captured one)
+  amount           Int                                   // paise
+  reason           String                                // e.g. "Cancelled by user: 2 passengers"
+  status           RefundStatus  @default(PENDING)
+  gatewayRefundId  String?       @unique                 // Razorpay rfnd_...
+  lastError        String?
+  createdAt        DateTime      @default(now())
+  processedAt      DateTime?
+
+  booking          Booking       @relation(fields: [bookingId], references: [id])
+  payment          Payment       @relation(fields: [paymentId], references: [id])
+
+  @@index([status, createdAt])
+  @@index([bookingId])
 }
 
 // Transactional outbox. "Booking confirmed" and "send the ticket email" must both happen or neither:
@@ -299,6 +329,7 @@ model OutboxMessage {
   attempts       Int               @default(0)
   nextAttemptAt  DateTime          @default(now())   // also a lease: pushed ahead while a worker is sending
   lastError      String?
+  payload        Json?                               // details known only at enqueue time (e.g. what a cancellation refunded)
   sentAt         DateTime?
   createdAt      DateTime          @default(now())
 

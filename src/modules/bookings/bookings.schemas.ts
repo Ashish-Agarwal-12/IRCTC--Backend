@@ -56,3 +56,13 @@ export const idempotencyHeaderSchema = z.object({
 });
 
 export const pnrParamSchema = z.object({ pnr: z.string().regex(/^\d{10}$/, "PNR is 10 digits") });
+
+// DELETE /bookings/:pnr?passengers=2,3 cancels only those passengers (positions as on the ticket).
+export const cancelQuerySchema = z.object({
+    passengers: z
+        .string()
+        .regex(/^\d+(,\d+)*$/, "Comma-separated passenger positions, e.g. 1,3")
+        .transform((s) => [...new Set(s.split(",").map(Number))])
+        .optional()
+        .meta({ description: "Positions to cancel (as on the ticket). Leave out to cancel the whole booking.", example: "2" }),
+});

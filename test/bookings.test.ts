@@ -36,13 +36,13 @@ beforeEach(async () => {
 
 describe("allotment and seat-picking rules", () => {
     it("allots berths, then RAC, then waitlist, and refuses a party that doesn't fit", () => {
-        const result = allotPassengers({ availableSeats: 1, racCapacity: 2, racBooked: 1, waitlistIssued: 4 }, 3);
+        const result = allotPassengers({ availableSeats: 1, racCapacity: 2, racBooked: 1, waitlistBooked: 4 }, 3);
         expect(result?.allotments).toEqual([
             { status: "CONFIRMED" }, { status: "RAC", racNumber: 2 }, { status: "WAITLISTED", waitlistNumber: 5 },
         ]);
-        expect(result?.counters).toEqual({ availableSeats: 0, racCapacity: 2, racBooked: 2, waitlistIssued: 5 });
+        expect(result?.counters).toEqual({ availableSeats: 0, racCapacity: 2, racBooked: 2, waitlistBooked: 5 });
 
-        expect(allotPassengers({ availableSeats: 0, racCapacity: 0, racBooked: 0, waitlistIssued: WAITLIST_LIMIT - 1 }, 2)).toBeNull();
+        expect(allotPassengers({ availableSeats: 0, racCapacity: 0, racBooked: 0, waitlistBooked: WAITLIST_LIMIT - 1 }, 2)).toBeNull();
     });
 
     it("honours berth preferences and keeps the party in one coach", () => {
@@ -104,15 +104,15 @@ describe("POST /bookings", () => {
             { status: "WAITLISTED", waitlistNumber: 1, berth: null },
         ]);
         expect(res.body.booking.passengers[0].berth).not.toBeNull();
-        expect(await inventory()).toMatchObject({ availableSeats: 0, racBooked: 8, waitlistIssued: 1 });
+        expect(await inventory()).toMatchObject({ availableSeats: 0, racBooked: 8, waitlistBooked: 1 });
     });
 
     it("refuses with REGRET when even the waitlist is full, and changes nothing", async () => {
-        await setInventory({ availableSeats: 0, racBooked: 8, waitlistIssued: WAITLIST_LIMIT });
+        await setInventory({ availableSeats: 0, racBooked: 8, waitlistBooked: WAITLIST_LIMIT });
         const res = await book(bookingBody()).expect(409);
         expect(res.body.error.code).toBe("REGRET");
         expect(await prisma.booking.count()).toBe(0);
-        expect((await inventory()).waitlistIssued).toBe(WAITLIST_LIMIT);
+        expect((await inventory()).waitlistBooked).toBe(WAITLIST_LIMIT);
     });
 });
 
@@ -161,7 +161,7 @@ describe("concurrent bookings", () => {
         expect(wl).toEqual(Array.from({ length: 29 }, (_, i) => i + 1));
 
         expect(await prisma.seatAllocation.count()).toBe(1);
-        expect(await inventory()).toMatchObject({ availableSeats: 0, waitlistIssued: 29 });
+        expect(await inventory()).toMatchObject({ availableSeats: 0, waitlistBooked: 29 });
     });
 
     it("never gives the same seat to two quotas booking the same class at once", async () => {

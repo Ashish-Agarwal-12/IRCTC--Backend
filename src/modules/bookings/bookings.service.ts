@@ -8,7 +8,7 @@ import { AppError, BadRequestError, ForbiddenError, NotFoundError, UnauthorizedE
 import { todayUtc, toIsoDate, toSkipTake, type Pagination } from "../../shared/validation.js";
 import { allotPassengers, fareFor, isBookable } from "../trains/availability.js";
 import { moment, resolveJourney } from "../trains/search.service.js";
-import { lockClassInventory, releaseExpiredHolds } from "./inventory.js";
+import { freeSeats, lockClassInventory, releaseExpiredHolds } from "./inventory.js";
 import { pickSeats } from "./seat-picking.js";
 import { renderTicketPdf, ticketContent } from "./ticket.js";
 import type { CreateBookingInput } from "./bookings.schemas.js";
@@ -25,6 +25,7 @@ export const bookingInclude = {
     schedule: { select: { journeyDate: true, train: { select: { number: true, name: true, departureMinutes: true } } } },
     fromStop: { include: { station: { select: { code: true, name: true, city: true } } } },
     toStop: { include: { station: { select: { code: true, name: true, city: true } } } },
+    refunds: { orderBy: { createdAt: "asc" } },
 } satisfies Prisma.BookingInclude;
 
 type BookingWithDetails = Prisma.BookingGetPayload<{ include: typeof bookingInclude }>;
@@ -56,6 +57,8 @@ export function toBookingView(booking: BookingWithDetails) {
                 ? { coach: p.allocation.seat.coach.code, number: p.allocation.seat.number, type: p.allocation.seat.berthType }
                 : null,
         })),
+        // Money coming back from cancellations (partial or full).
+        refunds: booking.refunds.map((r) => ({ amount: r.amount, reason: r.reason, status: r.status, createdAt: r.createdAt })),
         createdAt: booking.createdAt,
     };
 }
@@ -125,6 +128,14 @@ export async function createBooking(userId: string, input: CreateBookingInput, i
                     const now = new Date();
                     await lockClassInventory(tx, schedule.id, input.class);
 
+                    // Re-checked under the lock: chart preparation marks the schedule first and then
+                    // locks each class to cancel its waitlist, so a booking that got here after the
+                    // chart started must not add to a queue that has already been cleared.
+                    const current = await tx.trainSchedule.findUniqueOrThrow({ where: { id: schedule.id }, select: { status: true } });
+                    if (current.status !== "SCHEDULED") {
+                        throw new AppError(409, "BOOKING_CLOSED", "Booking is closed for this train on this date");
+                    }
+
                     // Expired holds in this class give their seats back first, so a hold that ran out a
                     // second ago doesn't block this booking until the background sweeper gets to it.
                     await releaseExpiredHolds(tx, schedule.id, input.class, now);
@@ -156,7 +167,7 @@ export async function createBooking(userId: string, input: CreateBookingInput, i
                         data: {
                             availableSeats: allotted.counters.availableSeats,
                             racBooked: allotted.counters.racBooked,
-                            waitlistIssued: allotted.counters.waitlistIssued,
+                            waitlistBooked: allotted.counters.waitlistBooked,
                         },
                     });
 
@@ -223,15 +234,6 @@ export async function createBooking(userId: string, input: CreateBookingInput, i
 async function findByIdempotencyKey(key: string) {
     const booking = await prisma.booking.findUnique({ where: { idempotencyKey: key }, include: bookingInclude });
     return booking && toBookingView(booking);
-}
-
-// Seats of this class on this train with no allocation on this schedule.
-async function freeSeats(tx: Prisma.TransactionClient, scheduleId: string, trainId: string, coachClass: CoachClass) {
-    const seats = await tx.seat.findMany({
-        where: { coach: { trainId, class: coachClass }, allocations: { none: { scheduleId } } },
-        select: { id: true, number: true, berthType: true, coach: { select: { code: true } } },
-    });
-    return seats.map((s) => ({ id: s.id, number: s.number, berthType: s.berthType, coachCode: s.coach.code }));
 }
 
 // --------------------------------------------------------------------------- read

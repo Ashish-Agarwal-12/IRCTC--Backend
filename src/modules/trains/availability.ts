@@ -27,7 +27,7 @@ export interface InventoryCounters {
     availableSeats: number;
     racCapacity: number;
     racBooked: number;
-    waitlistIssued: number;
+    waitlistBooked: number;
 }
 
 // What the next passenger would get from this inventory, in the order seats are handed out:
@@ -40,7 +40,7 @@ export type Allotment =
 function nextAllotment(inventory: InventoryCounters): Allotment | null {
     if (inventory.availableSeats > 0) return { status: "CONFIRMED" };
     if (inventory.racBooked < inventory.racCapacity) return { status: "RAC", racNumber: inventory.racBooked + 1 };
-    if (inventory.waitlistIssued < WAITLIST_LIMIT) return { status: "WAITLISTED", waitlistNumber: inventory.waitlistIssued + 1 };
+    if (inventory.waitlistBooked < WAITLIST_LIMIT) return { status: "WAITLISTED", waitlistNumber: inventory.waitlistBooked + 1 };
     return null;
 }
 
@@ -57,7 +57,7 @@ export function allotPassengers(inventory: InventoryCounters, count: number) {
         allotments.push(next);
         if (next.status === "CONFIRMED") counters.availableSeats -= 1;
         else if (next.status === "RAC") counters.racBooked += 1;
-        else counters.waitlistIssued += 1;
+        else counters.waitlistBooked += 1;
     }
     return { allotments, counters };
 }

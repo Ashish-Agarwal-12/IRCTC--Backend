@@ -116,6 +116,8 @@ These are conceptual entities for the initial design, not the final database sch
 > - `Payment` is one row per Razorpay order (a booking can have several if checkout is opened more than once). Status: `CREATED` → `CAPTURED`, or `REFUND_PENDING` → `REFUNDED` when the money can't be used, or `EXPIRED` if never paid. Unique `gatewayOrderId` and `gatewayPaymentId` give idempotency, instead of a separate key column.
 > - `PaymentEvent` records processed webhook deliveries by Razorpay's event id, so redeliveries are skipped.
 > - `OutboxMessage` (transactional outbox) holds emails owed to users (`BOOKING_CONFIRMED`, `REFUND_INITIATED`), written in the same transaction as the change they report. Status `PENDING` → `SENT`, or `FAILED` after 8 attempts.
+> - `Passenger.racNumber` / `waitlistNumber` are **current queue positions** (RAC 1 is next for a berth), kept contiguous after every cancellation. `SeatInventory.waitlistBooked` (renamed from `waitlistIssued`) is the current waitlist length.
+> - `Refund` holds money owed after a cancellation, written in the cancellation's transaction and paid out afterwards.
 > - Tickets are not stored: the PDF is rendered from the booking on each download, so it always shows the current status.
 
 ---
@@ -203,8 +205,9 @@ _Last updated: 2026-10-30_
 | 6. Seat allocation and holds | Done (see 8.8) |
 | 7. Payments | Done, **Razorpay test mode only** (see 8.9) |
 | 8. Confirmation, PNR, PDF tickets | Done (see 8.10) |
-| 9. Cancellations, refunds, RAC/WL promotion, chart preparation | Next |
-| 10–11 | Not started |
+| 9. Cancellations, refunds, RAC/WL promotion, chart preparation | Done (see 8.11) |
+| 10. Logging, metrics, tracing, alerts | Next (structured logs and request IDs are already in place) |
+| 11. Load and failure testing | Not started |
 
 ### 8.1 Foundations in place (Phase 0)
 
@@ -229,6 +232,7 @@ _Last updated: 2026-10-30_
 | `20261029160000_booking_passenger_position` | `Passenger.position`, unique per booking (hand-written; the table was empty) |
 | `20261029180000_payments` | `PaymentStatus` enum, `Payment` and `PaymentEvent` tables (new tables only, nothing existing changes) |
 | `20261030090000_notification_outbox` | `NotificationType` and `OutboxStatus` enums, `OutboxMessage` table (new table only) |
+| `20261030120000_cancellations_cascade` | `Refund` table, `RefundStatus` enum, new notification types, `OutboxMessage.payload`. Hand-edited: Prisma's SQL dropped `waitlistIssued`; this **renames** it to `waitlistBooked`, renumbers existing RAC/WL passengers to contiguous positions and recomputes the counters. |
 
 > Always read generated migration SQL before applying it: a column type change can be generated as drop-and-recreate, which deletes data.
 
@@ -282,6 +286,8 @@ _Last updated: 2026-10-30_
   - **Payment races:** verify + two webhooks + reconciliation at once confirm once with no refund. A payment racing hold expiry ends either CONFIRMED with seats or EXPIRED and refunded, never confirmed without seats. Removing the booking-row `FOR UPDATE` makes that test fail (verified, 3 of 3 runs).
   - Tickets and emails: ticket content (CNF/RAC/WL notation, lakh-grouped rupees), PDF download (owner only, paid only), confirmation email with the PDF attached, refund email, retries with backoff, giving up after 8 attempts, recovery after an SMTP outage.
   - **Outbox race:** three workers delivering at once send each email exactly once. Removing `FOR UPDATE SKIP LOCKED` sends every email twice (verified, 3 of 3 runs).
+  - Cancellations: refund rules (every time band, Tatkal, RAC/WL, IST departure times), the cascade (berth → RAC 1 → WL 1, positions moving up, berths back to the pool), partial cancellation, expired holds promoting the queue, unpaid cancellations, refunds surviving a Razorpay outage, no double refund after a crash, chart preparation (WL cancelled and refunded, RAC kept, booking closed, runs at the 4-hour mark, idempotent). Every scenario checks the queue invariants: positions 1..n, counters equal queue lengths, one berth per confirmed passenger.
+  - **Cancellation races:** 8 simultaneous cancellations leave the queues consistent, with berths going to the first in line; a double cancel refunds once; bookings racing cancellations keep the invariants. Removing the class lock from cancellation made 7 of 8 cancellations fail (verified, 3 of 3 runs).
 
 ### 8.6 API documentation
 
@@ -318,7 +324,7 @@ _Last updated: 2026-10-30_
 | Idempotency | Required `Idempotency-Key` header, stored as `userId:key` in the unique `Booking.idempotencyKey`. A repeat returns the original booking with 200. Simultaneous repeats: the loser's insert fails on the unique index, its transaction rolls back (no seats taken), and it returns the winner's booking. | A client that times out and retries can't book (and pay) twice. **Not yet:** rejecting a reused key with a *different* body (422). |
 | Hold | `PENDING_PAYMENT` with `holdExpiresAt = now + 10 min` | The database timestamp is the source of truth; nothing is lost on restart. |
 | Expiry | (1) **Lazy:** each booking first releases expired holds in the class it has locked. (2) **Sweeper:** `setInterval` every 15 s in the server process (`hold-expiry.ts`), one short transaction per schedule + class. Both use a conditional `updateMany(status = PENDING_PAYMENT)`, so only one of sweeper / payment / another instance wins. | Nobody is refused a seat an expired hold still sits on; search catches up within 15 s. Several instances can sweep at once safely. **TODO (BullMQ):** a delayed job per hold would make search exact too. |
-| Release | Confirmed seats back to `availableSeats`, `racBooked` decremented, passengers `CANCELLED`, allocations deleted. `waitlistIssued` is not decremented. | **Known gap until Phase 9:** freed berths go back to the pool instead of promoting existing RAC/WL passengers. |
+| Release | Through the same cascade as cancellations (see 8.11): freed berths go to RAC 1 / WL 1 first, and only then back to `availableSeats`. | **Fixed in Phase 9:** previously freed berths went to the pool ahead of waiting passengers. |
 | Rate limit | `POST /bookings`: 20 per minute per IP | Slows bots in a Tatkal rush; per-IP, in memory (move to Redis with several instances). |
 | Performance | 60–100 ms per booking warm, on the seed data | Target is under 2 s. Load testing with hundreds of concurrent requests is roadmap step 11. |
 
@@ -356,4 +362,24 @@ _Last updated: 2026-10-30_
 | PII | Logs carry message ids and errors, never addresses | Security requirement: no PII in logs. |
 | Why not BullMQ (yet) | The outbox lives in Postgres | Enqueuing to Redis after the commit could still be lost in a crash between the two; the outbox can't. BullMQ can later be fed *from* the outbox if throughput needs it. |
 | Not yet | QR code on the ticket; SMS; moving auth emails to the outbox; a "resend ticket" endpoint | Not needed for the core flow. |
+
+### 8.11 Cancellations, refunds, RAC/WL promotion, chart preparation (roadmap step 9)
+
+| Decision | Choice | Why |
+|---|---|---|
+| Queue numbers | `racNumber` / `waitlistNumber` are current positions, kept 1..n by one set-based `UPDATE … ROW_NUMBER() OVER (ORDER BY …)` after each change | IRCTC shows current status ("WL 3" means three ahead of you). One statement renumbers the whole queue, however many passengers moved, so the lock is held briefly (design goal in 2.3). |
+| The cascade | `releasePassengers()` in `inventory.ts`, under the class lock: each freed berth → RAC 1 (else WL 1, else the pool); each freed RAC place → WL 1; then renumber and set the counters to the queue lengths | One function for user cancellations, expired holds and chart preparation, so the rules can't drift apart. It runs in the caller's transaction, so a cascade commits whole or not at all. |
+| Concurrency | Cancellation takes the same class lock as booking, then the booking row (the row the payment path locks) | Bookings, cancellations and expiries for one class take turns, so no passenger is promoted twice and no berth handed out twice. The fixed order (class, then booking) rules out deadlocks; payments only lock the booking row. |
+| Who moves up | Strictly by queue order within the same quota; unpaid (held) bookings keep their place | Same rule as IRCTC. Quotas have separate queues. |
+| Promoted berth | Chosen with `pickSeats()` honouring the passenger's berth preference | Same seat-picking rule as at booking time. |
+| Refund rules | `refund-rules.ts`, per passenger, by status at the moment of cancelling, from the **boarding station's** departure: RAC/WL fare − Rs. 60 clerkage (until 30 min before); confirmed: flat charge per class (> 48 h), 25% (12–48 h), 50% (4–12 h), nothing after; confirmed Tatkal nothing | Modelled on Indian Railways' e-ticket rules. **Simplified:** no GST on charges, no TDR claims, the same rules for every train type. |
+| Time zone | Timetable times are IST (UTC+05:30); `departureInstant()` turns them into absolute times | "48 h before departure" needs the real instant, not a calendar date. |
+| Partial cancellation | `DELETE /bookings/:pnr?passengers=2,3` for paid bookings; the booking becomes `CANCELLED` when nobody is left | Families often drop one member. An unpaid booking is cancelled whole, because its open payment order is for the whole party. |
+| Refund durability | A `Refund` row (amount, reason) is written in the cancellation's transaction; paid out right after commit; retried by the reconciliation job | Same pattern as the outbox: the debt is recorded before any network call, so a crash can't lose it. |
+| No double refunds | Each Razorpay refund carries our Refund id in `notes`; before refunding, the payment's refunds are listed and matched on it | If we crash after Razorpay refunded but before saving it, the retry finds the earlier refund instead of refunding again (tested). |
+| Chart preparation | A job every minute prepares charts due 4 h before the train leaves its **origin**: (1) conditional `SCHEDULED → CHART_PREPARED`, (2) per class, under the class lock, cancel every waitlisted passenger with refund. Also `POST /admin/schedules/:id/chart`. | Booking re-checks the schedule status after taking the class lock, so a booking either ran before its class was cleared (and is cleared with it) or is refused: nobody can join a cleared waitlist. One short transaction per class. |
+| After the chart | RAC passengers stay on the chart; a confirmed passenger cancelling still upgrades RAC 1 (refund per the rules, which give nothing in the last 4 h) | Matches the railway: vacated berths go to RAC passengers on board. |
+| Emails | `BOOKING_CANCELLED` (per-passenger refund breakdown, in the outbox payload) and `STATUS_CHANGED` (passengers promoted WL → RAC or RAC → CNF, with a fresh ticket), both via the outbox | Users learn about promotions without polling. Unpaid bookings get no email (nothing paid, and the confirmation will show the status). |
+| RAC berths | RAC passengers still have no berth number | Two RAC passengers share one side-lower, which `SeatAllocation` (one passenger per seat) doesn't model. **Not yet.** |
+| Not yet | Segment-wise vacancy (a berth freed after an intermediate station), TDR, GST on charges, concessions | Listed simplifications. |
 
