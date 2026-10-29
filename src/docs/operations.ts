@@ -34,7 +34,7 @@ export interface Operation {
     params?: z.ZodObject;
     headers?: z.ZodObject;
     // Success responses (and endpoint-specific errors). Standard errors are added automatically.
-    responses: Record<number, { description: string; schema?: z.ZodType; html?: boolean }>;
+    responses: Record<number, { description: string; schema?: z.ZodType; html?: boolean; pdf?: boolean }>;
 }
 
 const error = (description: string) => ({ description, schema: R.errorResponse });
@@ -215,6 +215,18 @@ export const operations: Operation[] = [
         method: "get", path: "/bookings/{pnr}", tag: "Bookings", summary: "One of your bookings by PNR (PNR status)", auth: "user",
         params: pnrParamSchema,
         responses: { 200: { description: "The booking", schema: R.bookingResponse }, 404: error("No such booking among yours") },
+    },
+    {
+        method: "get", path: "/bookings/{pnr}/ticket.pdf", tag: "Bookings", summary: "Download the e-ticket (PDF)", auth: "user",
+        description:
+            "Generated from the current booking, so it always shows the latest status. Only for CONFIRMED (paid) bookings. " +
+            "The same PDF is emailed when the booking is confirmed.",
+        params: pnrParamSchema,
+        responses: {
+            200: { description: "The ticket", pdf: true },
+            404: error("No such booking among yours"),
+            409: error("`TICKET_NOT_AVAILABLE` (not paid yet, expired or cancelled)"),
+        },
     },
 
     // ------------------------------------------------------------------- payments (Razorpay, test mode)

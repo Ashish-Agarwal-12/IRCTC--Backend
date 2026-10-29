@@ -115,6 +115,8 @@ These are conceptual entities for the initial design, not the final database sch
 > - **Deviation:** the PNR is assigned when seats are held, not when payment confirms, because `Booking.pnr` is required. It only becomes a valid ticket once the booking is `CONFIRMED`.
 > - `Payment` is one row per Razorpay order (a booking can have several if checkout is opened more than once). Status: `CREATED` → `CAPTURED`, or `REFUND_PENDING` → `REFUNDED` when the money can't be used, or `EXPIRED` if never paid. Unique `gatewayOrderId` and `gatewayPaymentId` give idempotency, instead of a separate key column.
 > - `PaymentEvent` records processed webhook deliveries by Razorpay's event id, so redeliveries are skipped.
+> - `OutboxMessage` (transactional outbox) holds emails owed to users (`BOOKING_CONFIRMED`, `REFUND_INITIATED`), written in the same transaction as the change they report. Status `PENDING` → `SENT`, or `FAILED` after 8 attempts.
+> - Tickets are not stored: the PDF is rendered from the booking on each download, so it always shows the current status.
 
 ---
 
@@ -189,7 +191,7 @@ The following endpoints are the first draft and can be refined as the design dev
 
 ## 8. Implementation Status
 
-_Last updated: 2026-10-29_
+_Last updated: 2026-10-30_
 
 | Roadmap step | Status |
 |---|---|
@@ -200,8 +202,9 @@ _Last updated: 2026-10-29_
 | 5. Train search and availability | Done (see 8.7) |
 | 6. Seat allocation and holds | Done (see 8.8) |
 | 7. Payments | Done, **Razorpay test mode only** (see 8.9) |
-| 8. Notifications | Next |
-| 9–11 | Not started |
+| 8. Confirmation, PNR, PDF tickets | Done (see 8.10) |
+| 9. Cancellations, refunds, RAC/WL promotion, chart preparation | Next |
+| 10–11 | Not started |
 
 ### 8.1 Foundations in place (Phase 0)
 
@@ -225,6 +228,7 @@ _Last updated: 2026-10-29_
 | `20261029120000_catalog_fixes` | `Gender` enum, converted in place with `USING UPPER(...)` so existing rows are kept. Prisma's generated SQL dropped the column instead, so it was hand-edited. Also makes `chartPreparedAt` nullable. |
 | `20261029160000_booking_passenger_position` | `Passenger.position`, unique per booking (hand-written; the table was empty) |
 | `20261029180000_payments` | `PaymentStatus` enum, `Payment` and `PaymentEvent` tables (new tables only, nothing existing changes) |
+| `20261030090000_notification_outbox` | `NotificationType` and `OutboxStatus` enums, `OutboxMessage` table (new table only) |
 
 > Always read generated migration SQL before applying it: a column type change can be generated as drop-and-recreate, which deletes data.
 
@@ -245,7 +249,7 @@ _Last updated: 2026-10-29_
 | Admin creation | `npx prisma db seed` from `ADMIN_EMAIL` / `ADMIN_PASSWORD` | There is no API to become an admin. |
 | Email links | Link to `/verify-email#token=…` or `/reset-password#token=…`. A static page reads the token from the fragment, removes it from the address bar, and POSTs it only when the user clicks or submits. Pages send `Referrer-Policy: no-referrer` and `Cache-Control: no-store`. | The fragment never reaches the server, so tokens can't land in access logs, proxies or Referer headers. Email scanners that pre-open links can't use up the token, because opening the page does nothing on its own. A real frontend would replace these pages. |
 | Secrets in logs | Pino redacts auth and cookie headers, `referer`, `req.query.token` and body-like `*.token` / `*.password` fields; `redactUrl` scrubs `?token=` from logged URLs | Defense in depth for old-style or hand-typed links. |
-| Email delivery | nodemailer → Mailpit in dev; fire-and-forget with error logging | **TODO (BullMQ phase):** move to a queue so failed emails are retried and survive restarts. |
+| Email delivery | nodemailer → Mailpit in dev; fire-and-forget with error logging | **TODO:** move auth emails onto the outbox (8.10) too, so failed ones are retried and survive restarts. Booking emails already use it. |
 
 ### 8.4 Catalog (Phase 2)
 
@@ -276,6 +280,8 @@ _Last updated: 2026-10-29_
   - Catalog CRUD, route validation, and schedule generation (running days, idempotency, layout lock).
   - Payments, against an in-memory fake Razorpay (`setPaymentGateway`): order reuse, verify, forged signatures, a failed then successful attempt, capture of authorized payments, late payments refunded, a second paid order refunded, webhook signatures and redeliveries, reconciliation of lost callbacks, gateway outages, live keys refused.
   - **Payment races:** verify + two webhooks + reconciliation at once confirm once with no refund. A payment racing hold expiry ends either CONFIRMED with seats or EXPIRED and refunded, never confirmed without seats. Removing the booking-row `FOR UPDATE` makes that test fail (verified, 3 of 3 runs).
+  - Tickets and emails: ticket content (CNF/RAC/WL notation, lakh-grouped rupees), PDF download (owner only, paid only), confirmation email with the PDF attached, refund email, retries with backoff, giving up after 8 attempts, recovery after an SMTP outage.
+  - **Outbox race:** three workers delivering at once send each email exactly once. Removing `FOR UPDATE SKIP LOCKED` sends every email twice (verified, 3 of 3 runs).
 
 ### 8.6 API documentation
 
@@ -332,3 +338,22 @@ _Last updated: 2026-10-29_
 | Reconciliation | Every 60 s (`reconciliation.ts`): `CREATED` orders older than 1 minute are checked with Razorpay and settled if paid, or marked `EXPIRED` once their booking is gone; `REFUND_PENDING` refunds are retried. Batches of 50. | Covers a closed browser, a lost webhook (Razorpay can't reach localhost without a tunnel) and crashes mid-flow. |
 | Duplicate orders | Re-opening checkout reuses the open order; two simultaneous requests may create two orders | Harmless: only one payment can confirm the booking; money on the other is refunded. |
 | Not yet | Live mode; refunds on user cancellation (Phase 9); partial refunds; tying Razorpay order expiry to the hold; moving the jobs to BullMQ; webhook IP allow-listing | Out of scope for test mode. |
+
+### 8.10 Tickets and confirmation emails (roadmap step 8)
+
+| Decision | Choice | Why |
+|---|---|---|
+| PNR | Unchanged: assigned when seats are held (see Section 3); becomes a valid ticket on `CONFIRMED` | Already unique and stable; changing it at payment time would break links and emails sent earlier. |
+| Ticket | `GET /bookings/:pnr/ticket.pdf`, rendered on each request with pdfkit from the current booking; owner only, `CONFIRMED` only (409 `TICKET_NOT_AVAILABLE`) | No stored files to keep in sync: after a cancellation or RAC/WL promotion (Phase 9) the next download is already right. Renders in a few milliseconds (~2.6 KB). |
+| Content vs layout | `ticketContent()` (pure: labels, CNF/RAC/WL notation, `Rs. 1,23,456.78`) is separate from `renderTicketPdf()` | The content is checked directly in tests; the PDF test only checks it's a valid PDF. Built-in PDF fonts have no ₹ glyph, hence "Rs.". |
+| Headers | `Content-Disposition: attachment`, `Cache-Control: private, no-store` | Downloads rather than opens; personal data never sits in a shared cache, and a stale status is never served. |
+| Email reliability | **Transactional outbox**: an `OutboxMessage` row is written inside the transaction that confirms the booking (or records the refund). A worker every 10 s sends due rows. | Confirming (DB) and emailing (SMTP) can't be atomic. With the outbox, both commit or neither does, so a paid booking can never miss its ticket email, and an email is never sent for a confirmation that rolled back. |
+| Claiming | One `UPDATE … WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED) RETURNING`, which bumps `attempts` and sets a 5-minute lease in `nextAttemptAt` | Several instances can run the worker; each skips rows another has locked. The claim commits at once, so no transaction stays open during SMTP. If a worker dies mid-send, the lease runs out and another retries. |
+| Retries | Backoff 30 s, 1 min, 2 min … capped at 1 h; `FAILED` after 8 attempts (logged as an error) | Rides out an SMTP outage without hammering the server; a permanently failing email is surfaced instead of retried forever. |
+| Delivery guarantee | At-least-once | A crash between "SMTP accepted" and "marked SENT" resends the email. A duplicate ticket email is far less harmful than a missing one. |
+| Email content | Built at send time from the current booking | A retry an hour later still sends correct details. A confirmation for a booking that's no longer `CONFIRMED` is skipped. |
+| Refund email | Queued only when a late payment is refunded because the hold had ended | A duplicate payment on an already-confirmed booking is refunded quietly: the user already has a ticket. |
+| PII | Logs carry message ids and errors, never addresses | Security requirement: no PII in logs. |
+| Why not BullMQ (yet) | The outbox lives in Postgres | Enqueuing to Redis after the commit could still be lost in a crash between the two; the outbox can't. BullMQ can later be fed *from* the outbox if throughput needs it. |
+| Not yet | QR code on the ticket; SMS; moving auth emails to the outbox; a "resend ticket" endpoint | Not needed for the core flow. |
+

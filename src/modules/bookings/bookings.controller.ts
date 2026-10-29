@@ -22,3 +22,13 @@ export const getByPnr: RequestHandler = async (req, res) => {
     const { pnr } = pnrParamSchema.parse(req.params);
     res.json({ booking: await bookingsService.getBooking(req.user!.id, pnr) });
 };
+
+export const ticket: RequestHandler = async (req, res) => {
+    const { pnr } = pnrParamSchema.parse(req.params);
+    const { filename, pdf } = await bookingsService.getTicketPdf(req.user!.id, pnr);
+    res.set({
+        "Content-Disposition": `attachment; filename="${filename}"`, // download rather than open in the tab
+        "Cache-Control": "private, no-store", // personal data: no shared caches, and always the current status
+    });
+    res.type("application/pdf").send(pdf);
+};
