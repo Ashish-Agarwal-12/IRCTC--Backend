@@ -102,6 +102,16 @@ These are conceptual entities for the initial design, not the final database sch
 | `Payment` | Gateway order ID, payment status, idempotency key |
 | `Hold` | Temporary reservation with an expiry time |
 
+> **As implemented (see `prisma/schema.prisma`):**
+> - `Role` is an enum on `User` (`USER`, `ADMIN`) rather than a separate table.
+> - `Route` and `RouteStop` are merged: a train's route is its ordered list of `RouteStop` rows (`sequence`, minutes after origin departure, cumulative `distanceKm`).
+> - `Hold` is not a separate table: a booking in `PENDING_PAYMENT` with a `holdExpiresAt` timestamp *is* the hold. The `(status, holdExpiresAt)` index lets the expiry worker find expired holds cheaply.
+> - The allotted berth is a `SeatAllocation` row. Its unique `(scheduleId, seatId)` constraint is the database-level guarantee that a seat is never allotted twice.
+> - `Passenger.gender` is an enum (`MALE`, `FEMALE`, `TRANSGENDER`) so quota rules (e.g. ladies quota) can rely on it.
+> - `TrainSchedule.chartPreparedAt` is nullable; it stays null until the chart-preparation job runs.
+> - **Known simplification:** inventory and seat allocation are per journey, not per segment. A seat freed after an intermediate station cannot yet be resold for the rest of the route.
+> - **Not yet modelled:** `Payment`, plus the refresh-token and verification-token tables needed for auth.
+
 ---
 
 ## 4. Initial API Contract
@@ -168,3 +178,37 @@ The following endpoints are the first draft and can be refined as the design dev
 11. Run concurrency, load, failure-recovery, and performance tests.
 
 > **Important:** The 200 ms search and two-second booking targets are measurable goals, not guarantees from the stack alone. Validate them with realistic data, indexes, load tests, and production-like infrastructure.
+
+---
+
+## 8. Implementation Status
+
+_Last updated: 2026-10-29_
+
+| Roadmap step | Status |
+|---|---|
+| 1. Domain model and API contracts | Done: initial schema and migrations in `prisma/` |
+| 2. Project setup | Done, except Redis/BullMQ: containers run via Docker Compose, but no client library is installed or used yet |
+| 3. Authentication and authorization | Next |
+| 4–11 | Not started |
+
+### 8.1 Foundations in place (Phase 0)
+
+| Area | Implementation | Why |
+|---|---|---|
+| Config validation | `src/config/env.ts` parses `process.env` with Zod at startup | A bad deploy fails immediately with a clear message instead of failing later on first use. |
+| Error handling | `src/shared/error.ts` (`AppError`, `NotFoundError`, `ConflictError`) and `src/shared/error-handler.ts`, registered last in `src/app.ts` | One consistent error shape: `{ error: { code, message, details? } }`. Zod errors → 400 `VALIDATION_ERROR`, malformed JSON → 400 `INVALID_JSON`, unknown routes → 404 `NOT_FOUND`, anything unexpected → 500 `INTERNAL_ERROR` with a `requestId` and no internals leaked. |
+| Logging | `src/shared/logger.ts`: one shared Pino logger (pretty in development, JSON otherwise, silent in tests) | Same format everywhere. Passwords, tokens, auth headers, cookies, email and phone are redacted (security requirement: no PII in logs). |
+| Request tracing | `pino-http` with `genReqId` in `src/app.ts`: reuses an incoming `x-request-id` (max 128 chars) or generates a UUID, and echoes it in the response | Observability requirement: every request is traceable through the logs by its ID. |
+| Graceful shutdown | `src/server.ts` handles `SIGTERM`/`SIGINT`: stops accepting connections, lets in-flight requests finish, disconnects Prisma; forced exit after 10 s | Deploys and restarts must not cut off a request mid-transaction. |
+| Prisma client | Generated into `src/generated/prisma` (git-ignored) and used through the `@prisma/adapter-pg` driver adapter in `src/shared/prisma.ts`; config in `prisma.config.ts` | It must live under `src/` because `tsconfig.json` has `rootDir: "src"`. `prisma.config.ts` is the file name Prisma 7 picks up by default. |
+
+### 8.2 Migrations
+
+| Migration | Contents |
+|---|---|
+| `20261016115023_init_catalog` | Users, stations, trains, route stops, schedules |
+| `20261016124540_init_catalog` | Coaches, seats, seat inventory, bookings, passengers, seat allocations |
+| `20261029120000_catalog_fixes` | `Gender` enum, converted in place with `USING UPPER(...)` so existing rows are kept. Prisma's generated SQL dropped the column instead, so it was hand-edited. Also makes `chartPreparedAt` nullable. |
+
+> Always read generated migration SQL before applying it: a column type change can be generated as drop-and-recreate, which deletes data.
