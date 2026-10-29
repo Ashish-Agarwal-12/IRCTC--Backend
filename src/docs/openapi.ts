@@ -27,8 +27,12 @@ export function buildOpenApiDocument() {
             description: op.description,
             ...(op.auth && { security: [{ bearerAuth: [] }] }),
             // Only include the keys that exist: zod-openapi rejects `query: undefined`.
-            ...((op.query || op.params) && {
-                requestParams: { ...(op.query && { query: op.query }), ...(op.params && { path: op.params }) },
+            ...((op.query || op.params || op.headers) && {
+                requestParams: {
+                    ...(op.query && { query: op.query }),
+                    ...(op.params && { path: op.params }),
+                    ...(op.headers && { header: op.headers }),
+                },
             }),
             ...(op.body && { requestBody: { required: true, content: { "application/json": { schema: op.body } } } }),
             responses,
@@ -39,7 +43,7 @@ export function buildOpenApiDocument() {
         openapi: "3.1.0",
         info: {
             title: "IRCTC Backend API",
-            version: "0.2.0",
+            version: "0.3.0",
             description:
                 "Train reservation API. To call protected endpoints: log in via **POST /auth/login**, copy " +
                 "`accessToken`, click **Authorize** and paste it. Admin endpoints need the seeded admin " +
@@ -51,6 +55,7 @@ export function buildOpenApiDocument() {
             { name: "Email-link pages", description: "HTML pages opened from links in emails" },
             { name: "Stations" },
             { name: "Trains" },
+            { name: "Bookings", description: "Seat holds (10 minutes, pending payment), your bookings and PNR status" },
             { name: "Admin" },
             { name: "Admin: stations" },
             { name: "Admin: trains", description: "Typical order: create train → route → coaches → schedules" },

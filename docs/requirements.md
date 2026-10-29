@@ -111,6 +111,8 @@ These are conceptual entities for the initial design, not the final database sch
 > - `TrainSchedule.chartPreparedAt` is nullable; it stays null until the chart-preparation job runs.
 > - **Known simplification:** inventory and seat allocation are per journey, not per segment. A seat freed after an intermediate station cannot yet be resold for the rest of the route.
 > - `RefreshToken` (rotating, grouped by `familyId`) and `VerificationToken` (single-use email-verify / password-reset tokens) support auth. Both store only a SHA-256 hash of the token.
+> - `Passenger.position` keeps passengers in the order they were entered (unique per booking).
+> - **Deviation:** the PNR is assigned when seats are held, not when payment confirms, because `Booking.pnr` is required. It only becomes a valid ticket once the booking is `CONFIRMED`.
 > - **Not yet modelled:** `Payment`.
 
 ---
@@ -193,8 +195,9 @@ _Last updated: 2026-10-29_
 | 3. Authentication and authorization | Done (see 8.3) |
 | 4. Stations, routes, trains, schedules | Done (see 8.4); automated test suite added |
 | 5. Train search and availability | Done (see 8.7) |
-| 6. Seat allocation and holds | Next |
-| 7–11 | Not started |
+| 6. Seat allocation and holds | Done (see 8.8) |
+| 7. Payments | Next |
+| 8–11 | Not started |
 
 ### 8.1 Foundations in place (Phase 0)
 
@@ -262,6 +265,8 @@ _Last updated: 2026-10-29_
   - Rate limiting.
   - Seat layouts and quota maths.
   - Search (intermediate stops, direction, boarding-date shift, quotas, cancelled schedules) and availability (AVL → RAC → WL, chart prepared, segment fares).
+  - Booking: split CNF/RAC/WL parties, REGRET, berth preferences, idempotent retries (sequential and simultaneous), quota eligibility, hold expiry (sweeper and lazy release).
+  - **Concurrency:** 30 simultaneous requests for the last berth → exactly 1 confirmed, WL 1–29 each issued once; GENERAL and TATKAL racing in one class never share a seat. Removing `FOR UPDATE` makes both tests fail (verified).
   - Catalog CRUD, route validation, and schedule generation (running days, idempotency, layout lock).
 
 ### 8.6 API documentation
@@ -286,4 +291,20 @@ _Last updated: 2026-10-29_
 | Quotas | Search shows one quota (`quota`, default GENERAL); availability shows every quota of every class | Matches the IRCTC flow: list first, details per train. |
 | Caching | **None yet.** Search reads Postgres directly. | Availability changes with every booking, and queries are already well under target. Redis caching (short TTL on the timetable part) is worth adding only once load tests show a need; cached counts must never be used to allocate (principle 6.2). |
 | Not yet | Station-to-city search (all Delhi stations), Tatkal opening window, segment-wise inventory | Listed simplifications; see Section 3 for per-journey inventory. |
+
+### 8.8 Seat allocation and holds (Phase 4)
+
+| Decision | Choice | Why |
+|---|---|---|
+| Locking | `SELECT … FROM "SeatInventory" WHERE scheduleId, class ORDER BY quota FOR UPDATE` (raw SQL; Prisma has no `FOR UPDATE`), then read counters, allot, write, insert, all in one READ COMMITTED transaction | Bookings for one class of one train run one after another, so two can't read the same counter or the same free seat. **All quotas** of the class are locked because they share physical seats. `ORDER BY` fixes the lock order, which rules out deadlocks. |
+| Last line of defence | Unique `(scheduleId, seatId)` on `SeatAllocation` | Even a locking bug can't put two passengers on one berth; the database refuses it. |
+| Allotment | `allotPassengers()` in `availability.ts`, the same rule search displays: berth → RAC → waitlist, per passenger; whole booking refused (`REGRET`) if not everyone fits | One function, so search and booking never disagree. A party can be split (2 CNF + 1 RAC), as on IRCTC. |
+| Seats | Only CONFIRMED passengers get a berth now: berth preference first, then the party kept in one coach. RAC/WL get numbers; berths come at cancellation or chart time (Phase 9). | Two RAC passengers share one berth, which `SeatAllocation` (one passenger per seat) doesn't model yet. |
+| Quota rules | LADIES: women only. SENIOR_CITIZEN: men 60+, women and transgender 58+. TATKAL: max 4 passengers. All bookings max 6. | Validated in Zod with per-passenger error paths. **Simplification:** no Tatkal opening window, no child/infant fares. |
+| Idempotency | Required `Idempotency-Key` header, stored as `userId:key` in the unique `Booking.idempotencyKey`. A repeat returns the original booking with 200. Simultaneous repeats: the loser's insert fails on the unique index, its transaction rolls back (no seats taken), and it returns the winner's booking. | A client that times out and retries can't book (and pay) twice. **Not yet:** rejecting a reused key with a *different* body (422). |
+| Hold | `PENDING_PAYMENT` with `holdExpiresAt = now + 10 min` | The database timestamp is the source of truth; nothing is lost on restart. |
+| Expiry | (1) **Lazy:** each booking first releases expired holds in the class it has locked. (2) **Sweeper:** `setInterval` every 15 s in the server process (`hold-expiry.ts`), one short transaction per schedule + class. Both use a conditional `updateMany(status = PENDING_PAYMENT)`, so only one of sweeper / payment / another instance wins. | Nobody is refused a seat an expired hold still sits on; search catches up within 15 s. Several instances can sweep at once safely. **TODO (BullMQ):** a delayed job per hold would make search exact too. |
+| Release | Confirmed seats back to `availableSeats`, `racBooked` decremented, passengers `CANCELLED`, allocations deleted. `waitlistIssued` is not decremented. | **Known gap until Phase 9:** freed berths go back to the pool instead of promoting existing RAC/WL passengers. |
+| Rate limit | `POST /bookings`: 20 per minute per IP | Slows bots in a Tatkal rush; per-IP, in memory (move to Redis with several instances). |
+| Performance | 60–100 ms per booking warm, on the seed data | Target is under 2 s. Load testing with hundreds of concurrent requests is roadmap step 11. |
 

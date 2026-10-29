@@ -14,7 +14,7 @@ const MINUTES_PER_DAY = 1440;
 // When a stop happens, as a calendar date and a clock time. `minutesAfterDeparture` is the stop
 // time stored on RouteStop; adding the origin departure gives minutes after midnight on the
 // journey date, which can run past 1440 into the following days.
-function moment(journeyDate: Date, trainDepartureMinutes: number, minutesAfterDeparture: number) {
+export function moment(journeyDate: Date, trainDepartureMinutes: number, minutesAfterDeparture: number) {
     const absolute = trainDepartureMinutes + minutesAfterDeparture;
     return {
         date: toIsoDate(addDays(journeyDate, Math.floor(absolute / MINUTES_PER_DAY))),
@@ -141,6 +141,40 @@ export async function searchTrains({ from, to, date, quota }: SearchTrainsInput)
 
 // --------------------------------------------------------------------------- availability
 
+interface StopWithStation {
+    id: string;
+    sequence: number;
+    arrivalMinutes: number | null;
+    departureMinutes: number | null;
+    distanceKm: number;
+    station: { code: string; name: string; city: string };
+}
+
+// Finds the boarding and alighting stops for a journey on one train (default: the whole route) and
+// checks they make sense. Shared with booking, which must apply exactly the same rules.
+export function resolveJourney(trainNumber: string, stops: StopWithStation[], from?: string, to?: string) {
+    const findStop = (code: string) => {
+        const stop = stops.find((s) => s.station.code === code);
+        if (!stop) throw new BadRequestError("STATION_NOT_ON_ROUTE", `Train ${trainNumber} doesn't stop at ${code}`);
+        return stop;
+    };
+    // Without `from` / `to`, use the whole route: origin to terminus.
+    const boarding = from ? findStop(from) : stops[0];
+    const alighting = to ? findStop(to) : stops[stops.length - 1];
+    if (
+        !boarding || !alighting || alighting.sequence <= boarding.sequence ||
+        boarding.departureMinutes === null || alighting.arrivalMinutes === null
+    ) {
+        throw new BadRequestError("INVALID_JOURNEY", "`to` must be a stop after `from` on this train's route");
+    }
+    // Spread + explicit fields: returns the stops with TypeScript now knowing the times aren't null.
+    return {
+        boarding: { ...boarding, departureMinutes: boarding.departureMinutes },
+        alighting: { ...alighting, arrivalMinutes: alighting.arrivalMinutes },
+        distanceKm: alighting.distanceKm - boarding.distanceKm,
+    };
+}
+
 const QUOTA_ORDER: Quota[] = ["GENERAL", "TATKAL", "LADIES", "SENIOR_CITIZEN"];
 
 export async function getAvailability(scheduleId: string, query: AvailabilityQuery) {
@@ -167,24 +201,8 @@ export async function getAvailability(scheduleId: string, query: AvailabilityQue
     if (!schedule) throw new NotFoundError("Schedule");
 
     const { train } = schedule;
-    const stops = train.routeStops;
-    const findStop = (code: string) => {
-        const stop = stops.find((s) => s.station.code === code);
-        if (!stop) throw new BadRequestError("STATION_NOT_ON_ROUTE", `Train ${train.number} doesn't stop at ${code}`);
-        return stop;
-    };
-    // Without `from` / `to`, use the whole route: origin to terminus.
-    const boarding = query.from ? findStop(query.from) : stops[0];
-    const alighting = query.to ? findStop(query.to) : stops[stops.length - 1];
-    if (
-        !boarding || !alighting || alighting.sequence <= boarding.sequence ||
-        boarding.departureMinutes === null || alighting.arrivalMinutes === null
-    ) {
-        throw new BadRequestError("INVALID_JOURNEY", "`to` must be a stop after `from` on this train's route");
-    }
-
+    const { boarding, alighting, distanceKm } = resolveJourney(train.number, train.routeStops, query.from, query.to);
     const departure = moment(schedule.journeyDate, train.departureMinutes, boarding.departureMinutes);
-    const distanceKm = alighting.distanceKm - boarding.distanceKm;
     const bookable = isBookable(schedule.status, new Date(`${departure.date}T00:00:00Z`), todayUtc());
 
     // Group the flat inventory rows (one per class + quota) into classes, each with its quotas.

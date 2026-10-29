@@ -82,6 +82,7 @@ enum ScheduleStatus {
 model Passenger {
   id              String            @id @default(uuid())
   bookingId       String
+  position        Int               // 1-based order within the booking, as the user entered them
   name            String
   age             Int
   gender          Gender
@@ -93,7 +94,7 @@ model Passenger {
   booking         Booking           @relation(fields: [bookingId], references: [id])
   allocation      SeatAllocation?
 
-  @@index([bookingId])
+  @@unique([bookingId, position])
 }
 
 model User {

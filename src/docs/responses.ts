@@ -8,7 +8,9 @@
 
 import "zod-openapi"; // adds OpenAPI fields (id, example, ...) to the type of Zod's .meta()
 import { z } from "zod";
-import { CoachClass, Quota, Role, ScheduleStatus, Weekday } from "../generated/prisma/client.js";
+import {
+    BerthType, BookingStatus, CoachClass, Gender, PassengerStatus, Quota, Role, ScheduleStatus, Weekday,
+} from "../generated/prisma/client.js";
 import { AVAILABILITY_STATUSES } from "../modules/trains/availability.js";
 
 export const errorResponse = z
@@ -186,3 +188,44 @@ export const availabilityResponse = z
         ),
     })
     .meta({ id: "ScheduleAvailability" });
+
+// --------------------------------------------------------------------------- bookings
+
+export const booking = z
+    .strictObject({
+        pnr: z.string().meta({ example: "4821093756" }),
+        status: z.enum(BookingStatus),
+        holdExpiresAt: z.iso.datetime().nullable().meta({ description: "Pay before this. Set only while PENDING_PAYMENT." }),
+        train: z.strictObject({ number: z.string(), name: z.string() }),
+        journeyDate: z.iso.date().meta({ description: "The day the train leaves its origin" }),
+        from: z.strictObject({ station: stationRef, departure: journeyMoment }),
+        to: z.strictObject({ station: stationRef, arrival: journeyMoment }),
+        class: z.enum(CoachClass),
+        quota: z.enum(Quota),
+        totalFare: z.number().int().meta({ description: "All passengers, in paise", example: 340800 }),
+        passengers: z.array(
+            z.strictObject({
+                position: z.number().int(),
+                name: z.string(),
+                age: z.number().int(),
+                gender: z.enum(Gender),
+                berthPreference: z.enum(BerthType).nullable(),
+                status: z.enum(PassengerStatus),
+                racNumber: z.number().int().nullable(),
+                waitlistNumber: z.number().int().nullable(),
+                berth: z
+                    .strictObject({ coach: z.string().meta({ example: "B1" }), number: z.number().int(), type: z.enum(BerthType) })
+                    .nullable()
+                    .meta({ description: "Set for CONFIRMED passengers; RAC and waitlisted passengers get one later" }),
+            }),
+        ),
+        createdAt: z.iso.datetime(),
+    })
+    .meta({ id: "Booking" });
+
+export const bookingResponse = z.strictObject({ booking });
+
+export const bookingListResponse = z
+    .strictObject({ items: z.array(booking), page: z.number().int(), pageSize: z.number().int(), total: z.number().int() })
+    .meta({ id: "BookingList" });
+
