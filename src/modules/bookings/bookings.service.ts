@@ -16,7 +16,7 @@ export const HOLD_MINUTES = 10;
 
 // --------------------------------------------------------------------------- view
 
-const bookingInclude = {
+export const bookingInclude = {
     passengers: {
         orderBy: { position: "asc" },
         include: { allocation: { include: { seat: { include: { coach: { select: { code: true } } } } } } },
@@ -28,7 +28,7 @@ const bookingInclude = {
 
 type BookingWithDetails = Prisma.BookingGetPayload<{ include: typeof bookingInclude }>;
 
-function toBookingView(booking: BookingWithDetails) {
+export function toBookingView(booking: BookingWithDetails) {
     const { journeyDate, train } = booking.schedule;
     return {
         pnr: booking.pnr,

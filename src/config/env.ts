@@ -3,7 +3,7 @@
 import "dotenv/config";
 import { z } from "zod";
 
-const envSchema = z.object({
+export const envSchema = z.object({
     NODE_ENV: z.enum(["development", "test", "production"]),
     PORT: z.coerce.number().default(3000),
     DATABASE_URL: z.string().url(),
@@ -19,6 +19,23 @@ const envSchema = z.object({
     SMTP_HOST: z.string().default("localhost"),
     SMTP_PORT: z.coerce.number().int().default(1025),
     MAIL_FROM: z.string().default("IRCTC <no-reply@irctc.local>"),
+
+    // Payments: Razorpay, TEST MODE ONLY. A live key (rzp_live_...) is refused at startup, so this
+    // build can never charge a real card. All optional: without keys the payment endpoints answer
+    // 503 PAYMENTS_NOT_CONFIGURED and everything else still works.
+    RAZORPAY_KEY_ID: z
+        .string()
+        .regex(/^rzp_test_/, "RAZORPAY_KEY_ID must be a test key (rzp_test_...): live payments are not enabled")
+        .optional(),
+    RAZORPAY_KEY_SECRET: z.string().min(1).optional(),
+    // Set in the Razorpay dashboard when adding the webhook. Without it, POST /payments/webhook answers 503.
+    RAZORPAY_WEBHOOK_SECRET: z.string().min(1).optional(),
+}).refine((e) => !!e.RAZORPAY_KEY_ID === !!e.RAZORPAY_KEY_SECRET, {
+    message: "Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET together",
+    path: ["RAZORPAY_KEY_SECRET"],
 });
 
-export const env = envSchema.parse(process.env);
+// Empty values in .env (RAZORPAY_KEY_ID=) mean "not set", not "set to an empty string".
+const definedEnv = Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== ""));
+
+export const env = envSchema.parse(definedEnv);

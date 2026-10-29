@@ -113,7 +113,8 @@ These are conceptual entities for the initial design, not the final database sch
 > - `RefreshToken` (rotating, grouped by `familyId`) and `VerificationToken` (single-use email-verify / password-reset tokens) support auth. Both store only a SHA-256 hash of the token.
 > - `Passenger.position` keeps passengers in the order they were entered (unique per booking).
 > - **Deviation:** the PNR is assigned when seats are held, not when payment confirms, because `Booking.pnr` is required. It only becomes a valid ticket once the booking is `CONFIRMED`.
-> - **Not yet modelled:** `Payment`.
+> - `Payment` is one row per Razorpay order (a booking can have several if checkout is opened more than once). Status: `CREATED` → `CAPTURED`, or `REFUND_PENDING` → `REFUNDED` when the money can't be used, or `EXPIRED` if never paid. Unique `gatewayOrderId` and `gatewayPaymentId` give idempotency, instead of a separate key column.
+> - `PaymentEvent` records processed webhook deliveries by Razorpay's event id, so redeliveries are skipped.
 
 ---
 
@@ -129,7 +130,9 @@ The following endpoints are the first draft and can be refined as the design dev
 | `GET` | `/stations?q=del` | Search stations by query |
 | `GET` | `/trains/search?from=NDLS&to=BCT&date=2026-11-01` | Search trains by source, destination, and date |
 | `GET` | `/trains/:scheduleId/availability` | Get availability for a train schedule by class and quota |
-| `POST` | `/bookings` | Create a temporary hold and return payment-order details |
+| `POST` | `/bookings` | Create a temporary hold (the payment order comes from `POST /payments/orders`) |
+| `POST` | `/payments/orders` | Create a gateway order for a held booking |
+| `POST` | `/payments/verify` | Confirm a booking from checkout's signed result |
 | `POST` | `/payments/webhook` | Receive payment status updates from the gateway |
 | `GET` | `/bookings` | List the current user's bookings |
 | `GET` | `/bookings/:pnr` | Get booking details and PNR status |
@@ -196,8 +199,9 @@ _Last updated: 2026-10-29_
 | 4. Stations, routes, trains, schedules | Done (see 8.4); automated test suite added |
 | 5. Train search and availability | Done (see 8.7) |
 | 6. Seat allocation and holds | Done (see 8.8) |
-| 7. Payments | Next |
-| 8–11 | Not started |
+| 7. Payments | Done, **Razorpay test mode only** (see 8.9) |
+| 8. Notifications | Next |
+| 9–11 | Not started |
 
 ### 8.1 Foundations in place (Phase 0)
 
@@ -219,6 +223,8 @@ _Last updated: 2026-10-29_
 | `20261029082133_auth_tokens` | `TokenPurpose` enum, `RefreshToken` and `VerificationToken` tables |
 | `20261029090011_catalog_scheduling` | `Weekday` enum; `Train.runningDays` and `Train.departureMinutes`; `FareRule` table. Hand-edited so existing trains get placeholder values (00:00, daily) before the defaults are dropped. |
 | `20261029120000_catalog_fixes` | `Gender` enum, converted in place with `USING UPPER(...)` so existing rows are kept. Prisma's generated SQL dropped the column instead, so it was hand-edited. Also makes `chartPreparedAt` nullable. |
+| `20261029160000_booking_passenger_position` | `Passenger.position`, unique per booking (hand-written; the table was empty) |
+| `20261029180000_payments` | `PaymentStatus` enum, `Payment` and `PaymentEvent` tables (new tables only, nothing existing changes) |
 
 > Always read generated migration SQL before applying it: a column type change can be generated as drop-and-recreate, which deletes data.
 
@@ -268,6 +274,8 @@ _Last updated: 2026-10-29_
   - Booking: split CNF/RAC/WL parties, REGRET, berth preferences, idempotent retries (sequential and simultaneous), quota eligibility, hold expiry (sweeper and lazy release).
   - **Concurrency:** 30 simultaneous requests for the last berth → exactly 1 confirmed, WL 1–29 each issued once; GENERAL and TATKAL racing in one class never share a seat. Removing `FOR UPDATE` makes both tests fail (verified).
   - Catalog CRUD, route validation, and schedule generation (running days, idempotency, layout lock).
+  - Payments, against an in-memory fake Razorpay (`setPaymentGateway`): order reuse, verify, forged signatures, a failed then successful attempt, capture of authorized payments, late payments refunded, a second paid order refunded, webhook signatures and redeliveries, reconciliation of lost callbacks, gateway outages, live keys refused.
+  - **Payment races:** verify + two webhooks + reconciliation at once confirm once with no refund. A payment racing hold expiry ends either CONFIRMED with seats or EXPIRED and refunded, never confirmed without seats. Removing the booking-row `FOR UPDATE` makes that test fail (verified, 3 of 3 runs).
 
 ### 8.6 API documentation
 
@@ -308,3 +316,19 @@ _Last updated: 2026-10-29_
 | Rate limit | `POST /bookings`: 20 per minute per IP | Slows bots in a Tatkal rush; per-IP, in memory (move to Redis with several instances). |
 | Performance | 60–100 ms per booking warm, on the seed data | Target is under 2 s. Load testing with hundreds of concurrent requests is roadmap step 11. |
 
+### 8.9 Payments (Phase 5, Razorpay test mode only)
+
+| Decision | Choice | Why |
+|---|---|---|
+| Test mode only | `RAZORPAY_KEY_ID` must start with `rzp_test_` or the server won't start. Keys are optional; without them payment endpoints answer 503 `PAYMENTS_NOT_CONFIGURED`. | No code path in this build can charge a real card. Going live later means deliberately relaxing one regex. |
+| Gateway client | Plain `fetch` to Razorpay's REST API in `gateway.ts` (5 calls, 10 s timeout), behind a `PaymentGateway` interface | No SDK dependency; tests swap in a fake and never touch the network. Network errors and 5xx become 503 `PAYMENT_GATEWAY_UNAVAILABLE`, 4xx become 502. |
+| Flow | `POST /bookings` holds seats → `POST /payments/orders` creates the order → checkout → `POST /payments/verify` | Ordering is a separate call, so a Razorpay outage never fails or rolls back a hold (resilience requirement), and no network call happens while seat locks are held. |
+| One rule, three paths | Browser verify, webhook and reconciliation job all end in `settlePayment()` | The distributed-transaction problem (2.2): Razorpay can't be rolled back, so every step is repeatable and all paths reach the same result. |
+| Authentication | Verify and webhook need no login; they're checked by HMAC-SHA256 signatures (key secret over `order_id|payment_id`; webhook secret over the **raw** body), compared in constant time | Only Razorpay knows those secrets. `express.json({ verify })` keeps the raw body, because re-serialised JSON wouldn't match. |
+| Trusting the result | After the signature check, the payment is fetched from Razorpay; `authorized` payments are captured **before** the booking is confirmed | A signature proves Razorpay saw the payment, not that the money is ours. Capturing first means a booking is never confirmed without money. |
+| Confirming | One transaction: `SELECT … FROM "Booking" … FOR UPDATE`; if still `PENDING_PAYMENT` and the amount matches: booking → `CONFIRMED`, payment → `CAPTURED`, other open orders → `EXPIRED` | The row lock makes a payment and the hold sweeper take turns. Only the booking row is locked (never inventory), so it can't deadlock with the sweeper. A hold past its time but not yet released still counts as held (at most ~15 s). |
+| Money with nowhere to go | Hold already released, booking already paid, or wrong amount → payment `REFUND_PENDING` (in the same transaction), then a refund call after commit → `REFUNDED` | The debt is recorded before the network call, so a crash can't lose it. Razorpay's `amount_refunded` is checked first, and Razorpay refuses over-refunds, so nothing is refunded twice. |
+| Webhook dedupe | `PaymentEvent` keyed by `x-razorpay-event-id`, written **after** handling | Saves repeat work; handling is idempotent anyway, and recording afterwards means a failed attempt (500) is retried rather than skipped. |
+| Reconciliation | Every 60 s (`reconciliation.ts`): `CREATED` orders older than 1 minute are checked with Razorpay and settled if paid, or marked `EXPIRED` once their booking is gone; `REFUND_PENDING` refunds are retried. Batches of 50. | Covers a closed browser, a lost webhook (Razorpay can't reach localhost without a tunnel) and crashes mid-flow. |
+| Duplicate orders | Re-opening checkout reuses the open order; two simultaneous requests may create two orders | Harmless: only one payment can confirm the booking; money on the other is refunded. |
+| Not yet | Live mode; refunds on user cancellation (Phase 9); partial refunds; tying Razorpay order expiry to the hold; moving the jobs to BullMQ; webhook IP allow-listing | Out of scope for test mode. |

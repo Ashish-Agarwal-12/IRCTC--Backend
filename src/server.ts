@@ -3,6 +3,7 @@ import { env } from "./config/env.js";
 import { logger } from "./shared/logger.js";
 import { prisma } from "./shared/prisma.js";
 import { startHoldSweeper } from "./modules/bookings/hold-expiry.js";
+import { startPaymentReconciler } from "./modules/payments/reconciliation.js";
 
 const app = buildApp();
 
@@ -12,6 +13,9 @@ const server = app.listen(env.PORT, () => {
 
 // Releases seats of unpaid holds after 10 minutes (see hold-expiry.ts).
 const stopHoldSweeper = startHoldSweeper();
+// Settles payments whose verify call or webhook never arrived (see reconciliation.ts).
+const stopReconciler = env.RAZORPAY_KEY_ID ? startPaymentReconciler() : () => {};
+if (!env.RAZORPAY_KEY_ID) logger.warn("RAZORPAY_KEY_ID is empty: payments are disabled");
 
 // Graceful shutdown: on deploy/restart the platform sends SIGTERM. Stop accepting new connections,
 // let in-flight requests (e.g. a booking mid-transaction) finish, then close the DB pool.
@@ -29,6 +33,7 @@ function shutdown(signal: string) {
     }, 10_000);
     forceExit.unref();
     stopHoldSweeper();
+    stopReconciler();
 
     server.close(async (err) => {
         await prisma.$disconnect();

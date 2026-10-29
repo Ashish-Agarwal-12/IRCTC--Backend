@@ -13,6 +13,7 @@ import { authPagesRouter } from "./modules/auth/auth.pages.js";
 import { adminStationsRouter, stationsRouter } from "./modules/stations/stations.routes.js";
 import { adminTrainsRouter, trainsRouter } from "./modules/trains/trains.routes.js";
 import { bookingsRouter } from "./modules/bookings/bookings.routes.js";
+import { paymentsRouter } from "./modules/payments/payments.routes.js";
 
 // Where each router is mounted. Kept as data (rather than a list of app.use calls) so the
 // route-coverage test can list every real route and compare it with the API docs: Express 5
@@ -24,6 +25,7 @@ export const publicMounts: { path: string; router: Router }[] = [
     { path: "/stations", router: stationsRouter },
     { path: "/trains", router: trainsRouter },
     { path: "/bookings", router: bookingsRouter }, // all routes need a logged-in user (see bookings.routes.ts)
+    { path: "/payments", router: paymentsRouter }, // Razorpay, test mode only
 ];
 
 // Everything in here sits behind one admin guard (see buildApp), so no admin route can
@@ -57,7 +59,12 @@ export function buildApp() {
             },
         },
     }));
-    app.use(express.json());
+    app.use(express.json({
+        // Keep the raw bytes for the payment webhook, whose signature is over the body exactly as sent.
+        verify: (req, _res, buf) => {
+            if (req.url === "/payments/webhook") (req as express.Request).rawBody = buf;
+        },
+    }));
 
     // API docs: the raw OpenAPI document, and Swagger UI to read it and try requests.
     // Not exposed in production, where the API's shape is nobody else's business by default.

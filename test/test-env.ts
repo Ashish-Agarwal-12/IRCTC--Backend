@@ -11,4 +11,8 @@ export const testEnv = {
     REDIS_URL: "redis://localhost:6379",
     JWT_ACCESS_SECRET: "test-secret-that-is-at-least-32-characters-long",
     APP_URL: "http://localhost:3000",
+    // Fake test-mode credentials. Tests swap in a fake gateway, so Razorpay is never called.
+    RAZORPAY_KEY_ID: "rzp_test_fakekeyfortests",
+    RAZORPAY_KEY_SECRET: "test-key-secret",
+    RAZORPAY_WEBHOOK_SECRET: "test-webhook-secret",
 };

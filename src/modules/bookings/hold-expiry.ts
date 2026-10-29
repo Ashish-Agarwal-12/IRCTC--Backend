@@ -11,7 +11,7 @@
 // conditional status update lets only one of them expire each booking.
 
 import { prisma } from "../../shared/prisma.js";
-import { logger } from "../../shared/logger.js";
+import { startIntervalJob } from "../../shared/interval-job.js";
 import { lockClassInventory, releaseExpiredHolds } from "./inventory.js";
 
 // Returns how many bookings were expired.
@@ -35,20 +35,5 @@ export async function expireHolds(now = new Date()): Promise<number> {
 
 // Starts the periodic sweep; returns a function that stops it (used on shutdown).
 export function startHoldSweeper(intervalMs = 15_000): () => void {
-    let running = false;
-    const timer = setInterval(async () => {
-        if (running) return; // a slow sweep is still going; don't start a second one on top of it
-        running = true;
-        try {
-            const expired = await expireHolds();
-            if (expired > 0) logger.info({ expired }, "Released expired seat holds");
-        } catch (err) {
-            // Never let a failed sweep crash the server; the next one retries.
-            logger.error({ err }, "Hold sweep failed");
-        } finally {
-            running = false;
-        }
-    }, intervalMs);
-    timer.unref(); // don't keep the process alive just for this timer
-    return () => clearInterval(timer);
+    return startIntervalJob("hold-expiry", intervalMs, () => expireHolds());
 }

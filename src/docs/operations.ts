@@ -15,6 +15,7 @@ import {
     scheduleIdParamSchema, searchTrainsSchema, trainNumberParamSchema,
 } from "../modules/trains/trains.schemas.js";
 import { createBookingSchema, idempotencyHeaderSchema, pnrParamSchema } from "../modules/bookings/bookings.schemas.js";
+import { createOrderSchema, verifyPaymentSchema } from "../modules/payments/payments.schemas.js";
 import { idParamSchema, paginationSchema } from "../shared/validation.js";
 import * as R from "./responses.js";
 
@@ -214,6 +215,54 @@ export const operations: Operation[] = [
         method: "get", path: "/bookings/{pnr}", tag: "Bookings", summary: "One of your bookings by PNR (PNR status)", auth: "user",
         params: pnrParamSchema,
         responses: { 200: { description: "The booking", schema: R.bookingResponse }, 404: error("No such booking among yours") },
+    },
+
+    // ------------------------------------------------------------------- payments (Razorpay, test mode)
+    {
+        method: "post", path: "/payments/orders", tag: "Payments", summary: "Start paying for a held booking", auth: "user", rateLimited: true,
+        description:
+            "Creates a Razorpay order for the booking's `totalFare`. Open `checkoutUrl` in a browser to pay (test mode: " +
+            "UPI `success@razorpay` or a Razorpay test card). Calling again while the order is open returns the same order (200).",
+        body: createOrderSchema.meta({ id: "CreatePaymentOrderRequest", example: { pnr: "4821093756" } }),
+        responses: {
+            201: { description: "Order created", schema: R.paymentOrderResponse },
+            200: { description: "The booking's open order, reused", schema: R.paymentOrderResponse },
+            404: error("No such booking among yours"),
+            409: error("`ALREADY_PAID` or `HOLD_EXPIRED`"),
+            503: error("`PAYMENT_GATEWAY_UNAVAILABLE` (the hold is untouched; retry) or `PAYMENTS_NOT_CONFIGURED`"),
+        },
+    },
+    {
+        method: "post", path: "/payments/verify", tag: "Payments", summary: "Confirm a booking after checkout", rateLimited: true,
+        description:
+            "Send the three fields Razorpay checkout returns on success. No login: the signature (HMAC with our key secret) " +
+            "proves the request. The payment's state is then fetched from Razorpay. Safe to call more than once.",
+        body: verifyPaymentSchema.meta({ id: "VerifyPaymentRequest" }),
+        responses: {
+            200: { description: "Payment applied", schema: R.verifyPaymentResponse },
+            400: error("Invalid input or `INVALID_SIGNATURE`"),
+            402: error("`PAYMENT_NOT_COMPLETED` (failed or not yet paid)"),
+            404: error("Unknown order"),
+            502: error("`PAYMENT_GATEWAY_ERROR`"),
+            503: error("`PAYMENT_GATEWAY_UNAVAILABLE` or `PAYMENTS_NOT_CONFIGURED`"),
+        },
+    },
+    {
+        method: "post", path: "/payments/webhook", tag: "Payments", summary: "Razorpay webhook (server to server)",
+        description:
+            "Called by Razorpay, not by clients. Checked with the `X-Razorpay-Signature` header (HMAC of the raw body). " +
+            "Handles `payment.captured`, `order.paid` and `payment.failed`; acknowledges everything else. Repeated deliveries " +
+            "(same `X-Razorpay-Event-Id`) are answered `duplicate`.",
+        responses: {
+            200: { description: "Event received", schema: R.webhookResponse },
+            400: error("`INVALID_SIGNATURE`"),
+            503: error("`PAYMENTS_NOT_CONFIGURED` (no webhook secret)"),
+        },
+    },
+    {
+        method: "get", path: "/payments/checkout", tag: "Payments", summary: "Test-mode checkout page",
+        description: "HTML page that opens Razorpay checkout. Open the `checkoutUrl` from POST /payments/orders.",
+        responses: { 200: { description: "HTML page", html: true } },
     },
 
     // ------------------------------------------------------------------- admin

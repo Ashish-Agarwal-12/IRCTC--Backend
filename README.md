@@ -77,6 +77,8 @@ Validated at startup by [src/config/env.ts](src/config/env.ts). The server refus
 | `APP_URL` | `http://localhost:3000` | Base URL used in email links |
 | `SMTP_HOST` / `SMTP_PORT` | `localhost` / `1025` | Mail server (Mailpit in development) |
 | `MAIL_FROM` | `IRCTC <no-reply@irctc.local>` | Sender address |
+| `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` | `rzp_test_...` | Razorpay **test-mode** API keys. Optional; without them the payment endpoints answer 503. A live key (`rzp_live_...`) is refused at startup. |
+| `RAZORPAY_WEBHOOK_SECRET` | | Secret set on the webhook in the Razorpay dashboard. Optional; needed only to receive webhooks. |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | | Used only by the seed script |
 
 ## Project structure
@@ -111,6 +113,12 @@ src/
     inventory.ts         # row locks on SeatInventory + releasing expired holds
     seat-picking.ts      # pure: choose berths (preferences, keep the party together)
     hold-expiry.ts       # background sweeper that expires unpaid holds
+  modules/payments/      # Razorpay, TEST MODE ONLY
+    gateway.ts           # the only code that calls Razorpay (fetch); swappable fake in tests
+    signatures.ts        # HMAC checks for checkout and webhook signatures
+    payments.service.ts  # create order, verify, webhook, and settlePayment (confirm or refund)
+    reconciliation.ts    # job: settle orders we missed, retry refunds owed
+    payments.pages.ts    # test-mode checkout page (opens Razorpay checkout)
   modules/system/        # /health and /admin/ping
   docs/
     operations.ts        # every endpoint: method, path, request schemas, responses
@@ -126,6 +134,7 @@ src/
     middleware/
       authenticate.ts    # authenticate + requireRole(...)
       rate-limit.ts      # createRateLimiter(limit, windowMs)
+    interval-job.ts      # startIntervalJob(): background jobs in the server process
   types/express.d.ts     # adds req.user to Express's Request type
   generated/prisma/      # generated Prisma client (git-ignored)
 test/                    # Vitest + Supertest suites, helpers, test-DB setup, API contract checks
@@ -166,6 +175,10 @@ docs/requirements.md     # requirements, design, roadmap, status
 | `POST` | `/bookings` | Auth + verified email + `Idempotency-Key` header. `{ scheduleId, from, to, class, quota?, passengers: [{ name, age, gender, berthPreference? }] (1–6), contactPhone? }` → 201 booking `PENDING_PAYMENT` with a 10-minute hold; each passenger CONFIRMED (with berth), RAC n or WL n. Same key again → 200 with the same booking. 409 `REGRET` if full. |
 | `GET` | `/bookings?page=1` | Auth. Your bookings, newest first |
 | `GET` | `/bookings/:pnr` | Auth. One of your bookings (PNR status); someone else's PNR is a 404 |
+| `POST` | `/payments/orders` | Auth. `{ pnr }` → 201 Razorpay order (`orderId`, `amount`, `keyId`, `prefill` with the booking contact, `checkoutUrl`) for a held booking; 200 with the same order if one is open. 409 `ALREADY_PAID` / `HOLD_EXPIRED`, 503 if Razorpay is down. |
+| `GET` | `/payments/checkout` | Test-mode HTML page: open `checkoutUrl`, choose Netbanking → any bank → **Success** (allow pop-ups). The booking's phone and email are prefilled. |
+| `POST` | `/payments/verify` | `{ razorpay_order_id, razorpay_payment_id, razorpay_signature }` (what checkout returns) → 200 `{ result: CONFIRMED \| REFUND_PENDING \| REFUNDED, booking }`. No login: the signature is checked. 402 if the payment failed. |
+| `POST` | `/payments/webhook` | Called by Razorpay; checked with `X-Razorpay-Signature`. Handles `payment.captured`, `order.paid`, `payment.failed`. |
 | `POST` | `/admin/stations` | `{ code, name, city }` → 201; 409 if the code exists |
 | `PATCH` | `/admin/stations/:id` | `{ name?, city? }` (code can't change) |
 | `POST` | `/admin/trains` | `{ number, name, runningDays: ["MON", ...], departureTime: "16:55" }` → 201 |
