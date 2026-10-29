@@ -8,7 +8,8 @@
 
 import "zod-openapi"; // adds OpenAPI fields (id, example, ...) to the type of Zod's .meta()
 import { z } from "zod";
-import { CoachClass, Role, Weekday } from "../generated/prisma/client.js";
+import { CoachClass, Quota, Role, ScheduleStatus, Weekday } from "../generated/prisma/client.js";
+import { AVAILABILITY_STATUSES } from "../modules/trains/availability.js";
 
 export const errorResponse = z
     .strictObject({
@@ -120,3 +121,68 @@ export const scheduleResultResponse = z
         skipped: z.number().int().meta({ description: "Dates that already had a schedule" }),
     })
     .meta({ id: "ScheduleGenerationResult" });
+
+// --------------------------------------------------------------------------- search & availability
+
+const stationRef = z.strictObject({ code: z.string(), name: z.string(), city: z.string() }).meta({ id: "StationRef" });
+
+const journeyMoment = z
+    .strictObject({ date: z.iso.date(), time: z.string().meta({ example: "21:30" }) })
+    .meta({ id: "JourneyMoment", description: "Local date and time at the station" });
+
+const fare = z.number().int().nullable().meta({
+    description: "Per passenger, in paise (170400 = ₹1,704). null if no fare is set for the class.",
+    example: 170400,
+});
+
+const availability = z
+    .strictObject({
+        status: z.enum(AVAILABILITY_STATUSES),
+        count: z.number().int().nullable().meta({
+            description: "AVAILABLE: berths left. RAC / WAITLIST: the number the next passenger would get. Otherwise null.",
+        }),
+        label: z.string().meta({ example: "AVL 42" }),
+    })
+    .meta({ id: "Availability" });
+
+export const trainSearchResponse = z
+    .strictObject({
+        from: stationRef,
+        to: stationRef,
+        date: z.iso.date(),
+        quota: z.enum(Quota),
+        trains: z.array(
+            z.strictObject({
+                scheduleId: z.string().meta({ description: "Use with GET /trains/{scheduleId}/availability, and later to book" }),
+                number: z.string(),
+                name: z.string(),
+                departure: journeyMoment,
+                arrival: journeyMoment,
+                durationMinutes: z.number().int(),
+                distanceKm: z.number().int(),
+                bookable: z.boolean(),
+                classes: z.array(z.strictObject({ class: z.enum(CoachClass), fare, availability })),
+            }),
+        ),
+    })
+    .meta({ id: "TrainSearchResult" });
+
+export const availabilityResponse = z
+    .strictObject({
+        scheduleId: z.string(),
+        train: z.strictObject({ number: z.string(), name: z.string() }),
+        journeyDate: z.iso.date().meta({ description: "The day the train leaves its origin" }),
+        status: z.enum(ScheduleStatus),
+        bookable: z.boolean(),
+        from: z.strictObject({ station: stationRef, departure: journeyMoment }),
+        to: z.strictObject({ station: stationRef, arrival: journeyMoment }),
+        distanceKm: z.number().int(),
+        durationMinutes: z.number().int(),
+        classes: z.array(
+            z.strictObject({
+                class: z.enum(CoachClass),
+                quotas: z.array(z.strictObject({ quota: z.enum(Quota), fare, availability })),
+            }),
+        ),
+    })
+    .meta({ id: "ScheduleAvailability" });

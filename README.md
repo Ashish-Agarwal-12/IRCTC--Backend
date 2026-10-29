@@ -104,6 +104,8 @@ src/
     trains.service.ts    # trains, routes, coaches
     schedules.service.ts # dated schedules + seat inventory per class/quota
     seat-layout.ts       # berth layouts per coach class (SL, 3A, 2A, 1A, CC)
+    search.service.ts    # train search between stations + per-schedule availability
+    availability.ts      # pure rules: AVL / RAC / WL / REGRET status, fares (incl. Tatkal)
   modules/system/        # /health and /admin/ping
   docs/
     operations.ts        # every endpoint: method, path, request schemas, responses
@@ -153,7 +155,9 @@ docs/requirements.md     # requirements, design, roadmap, status
 | `GET` | `/admin/ping` | Admin only; placeholder to check role guards |
 | `GET` | `/stations?q=del` | Station autocomplete by code, name or city (max 10; exact code first) |
 | `GET` | `/trains?page=1&pageSize=20` | Paginated train list |
+| `GET` | `/trains/search?from=NDLS&to=MMCT&date=2026-11-01&quota=GENERAL` | Trains from `from` to `to` boarding on `date`, with fare and availability per class (`AVL 42`, `RAC 3`, `WL 24`, `REGRET`) |
 | `GET` | `/trains/:number` | Train with route (clock times + day offset) and coaches |
+| `GET` | `/trains/:scheduleId/availability?from=KOTA&to=MMCT` | Every class and quota of one schedule, with fares for that part of the route (default: whole route) |
 | `POST` | `/admin/stations` | `{ code, name, city }` → 201; 409 if the code exists |
 | `PATCH` | `/admin/stations/:id` | `{ name?, city? }` (code can't change) |
 | `POST` | `/admin/trains` | `{ number, name, runningDays: ["MON", ...], departureTime: "16:55" }` → 201 |

@@ -11,7 +11,8 @@ import {
 } from "../modules/auth/auth.schemas.js";
 import { createStationSchema, searchStationsSchema, updateStationSchema } from "../modules/stations/stations.schemas.js";
 import {
-    createTrainSchema, generateSchedulesSchema, replaceCoachesSchema, replaceRouteSchema, trainNumberParamSchema,
+    availabilityQuerySchema, createTrainSchema, generateSchedulesSchema, replaceCoachesSchema, replaceRouteSchema,
+    scheduleIdParamSchema, searchTrainsSchema, trainNumberParamSchema,
 } from "../modules/trains/trains.schemas.js";
 import { idParamSchema, paginationSchema } from "../shared/validation.js";
 import * as R from "./responses.js";
@@ -141,9 +142,35 @@ export const operations: Operation[] = [
         responses: { 200: { description: "One page of trains", schema: R.trainListResponse } },
     },
     {
+        method: "get", path: "/trains/search", tag: "Trains", summary: "Search trains between two stations on a date",
+        description:
+            "`date` is the day you board at `from`. Lists trains that stop at `from` and later at `to` and run that day, " +
+            "earliest departure first, with the fare and availability of each class in `quota` (default GENERAL). " +
+            "Availability is a snapshot: booking re-checks it.",
+        query: searchTrainsSchema.meta({ example: { from: "NDLS", to: "MMCT", date: "2026-11-01" } }),
+        responses: {
+            200: { description: "Matching trains (empty list if none run that day)", schema: R.trainSearchResponse },
+            404: error("Unknown station code"),
+        },
+    },
+    {
         method: "get", path: "/trains/{number}", tag: "Trains", summary: "A train with its route and coaches",
         params: trainNumberParamSchema,
         responses: { 200: { description: "Train details", schema: R.trainResponse }, 404: error("No such train") },
+    },
+
+    {
+        method: "get", path: "/trains/{scheduleId}/availability", tag: "Trains", summary: "Availability and fares of one schedule, per class and quota",
+        description:
+            "Get `scheduleId` from search. `from` / `to` choose the part of the route you travel (default: the whole route); " +
+            "they change the fare and times, not the counts (inventory is per journey).",
+        params: scheduleIdParamSchema,
+        query: availabilityQuerySchema,
+        responses: {
+            200: { description: "Availability", schema: R.availabilityResponse },
+            400: error("Invalid input, a station not on the route (`STATION_NOT_ON_ROUTE`) or `to` not after `from` (`INVALID_JOURNEY`)"),
+            404: error("No such schedule"),
+        },
     },
 
     // ------------------------------------------------------------------- admin

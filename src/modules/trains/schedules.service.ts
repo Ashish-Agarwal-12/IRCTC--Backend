@@ -4,9 +4,8 @@
 import type { CoachClass, Quota } from "../../generated/prisma/client.js";
 import { prisma } from "../../shared/prisma.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../../shared/error.js";
+import { DAY_MS, todayUtc } from "../../shared/validation.js";
 import { CLASSES_WITH_RAC } from "./seat-layout.js";
-
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 // Date.getUTCDay() numbers days from Sunday = 0. Map those numbers to our Weekday enum values.
 const WEEKDAY_BY_INDEX = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"] as const;
@@ -50,8 +49,7 @@ export function splitQuotas(coachClass: CoachClass, berths: number): QuotaAlloca
 // Creates schedules for every running day in [from, to]. Safe to call repeatedly or for overlapping
 // ranges: dates that already have a schedule are skipped, not duplicated.
 export async function generateSchedules(trainId: string, from: Date, to: Date) {
-    const today = new Date(new Date().toISOString().slice(0, 10) + "T00:00:00Z");
-    if (from < today) {
+    if (from < todayUtc()) {
         throw new BadRequestError("INVALID_DATE_RANGE", "Schedules can't start in the past");
     }
 

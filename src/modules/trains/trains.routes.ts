@@ -1,11 +1,13 @@
 import { Router } from "express";
 import * as trains from "./trains.controller.js";
 
-// Public. (Phase 3 adds GET /search here; it must be registered before "/:number",
-// or Express would treat the word "search" as a train number.)
+// Public. Express tries routes in the order they're registered, so "/search" must come before
+// "/:number": otherwise GET /trains/search would match "/:number" with number = "search".
 export const trainsRouter = Router();
 trainsRouter.get("/", trains.list);
+trainsRouter.get("/search", trains.search);
 trainsRouter.get("/:number", trains.getByNumber);
+trainsRouter.get("/:scheduleId/availability", trains.availability);
 
 // Admin: mounted under /admin/trains (admin-only, see app.ts).
 // PUT = "replace the whole thing"; route and coaches are always sent as complete lists.

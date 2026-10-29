@@ -192,8 +192,9 @@ _Last updated: 2026-10-29_
 | 2. Project setup | Done, except Redis/BullMQ: containers run via Docker Compose, but no client library is installed or used yet |
 | 3. Authentication and authorization | Done (see 8.3) |
 | 4. Stations, routes, trains, schedules | Done (see 8.4); automated test suite added |
-| 5. Train search and availability | Next |
-| 6–11 | Not started |
+| 5. Train search and availability | Done (see 8.7) |
+| 6. Seat allocation and holds | Next |
+| 7–11 | Not started |
 
 ### 8.1 Foundations in place (Phase 0)
 
@@ -260,6 +261,7 @@ _Last updated: 2026-10-29_
   - Auth: registration, verification, login, rotation and reuse detection, concurrent refresh, reset, role guards.
   - Rate limiting.
   - Seat layouts and quota maths.
+  - Search (intermediate stops, direction, boarding-date shift, quotas, cancelled schedules) and availability (AVL → RAC → WL, chart prepared, segment fares).
   - Catalog CRUD, route validation, and schedule generation (running days, idempotency, layout lock).
 
 ### 8.6 API documentation
@@ -271,3 +273,17 @@ _Last updated: 2026-10-29_
 | Response shapes | `src/docs/responses.ts`, all `z.strictObject` | Strict schemas reject undocumented extra fields, so leaking a new field (e.g. a password hash) fails tests. |
 | Verification | Tests wrap the app in a checker (`test/contract.ts`) that matches each response to its operation and fails the test if the status isn't documented or the body doesn't parse. `test/openapi.test.ts` compares the app's real routes, from the mount tables in `app.ts`, with the documented ones in both directions. | The docs stay correct without anyone remembering to check. Verified by deliberately breaking a schema, which made 9 tests fail. |
 | Exposure | `/docs` and `/openapi.json` are served whenever `NODE_ENV !== "production"` | Production shouldn't advertise its full API surface by default. |
+
+### 8.7 Search and availability (Phase 3)
+
+| Decision | Choice | Why |
+|---|---|---|
+| Search date | `date` is the day the passenger **boards at `from`**. The schedule looked up is `date − dayOfRun`, where `dayOfRun = floor((train departure + stop departure) / 1440)`. | A passenger boarding at Ratlam at 01:33 thinks of "the 1st", even though that train left Delhi on the 31st. |
+| Direction | A train matches only if its stop at `to` has a higher `sequence` than its stop at `from` | The same train stops at both stations in both directions' searches; only one is correct. |
+| Query shape | 3 queries per search regardless of results: stations, `RouteStop` at `from` (with the train's stop at `to`), then schedules + quota inventory and fare rules in parallel | No N+1 queries. Uses the existing `RouteStop(stationId)` and `TrainSchedule(trainId, journeyDate)` indexes. Measured 10–26 ms warm on the seed data, against the 200 ms target. |
+| Availability status | Pure function in `availability.ts`: `AVAILABLE` while berths remain, then `RAC n` (next RAC number) while `racBooked < racCapacity`, then `WL n` up to `WAITLIST_LIMIT` (100), then `REGRET`; `BOOKING_CLOSED` once the chart is prepared or the date has passed | The same order Phase 4 booking will allocate in; keeping it one function means search and booking can't disagree. |
+| Fares | `baseFare + perKm × segment km`, Tatkal +30%, rounded **up** to a whole rupee; integer maths only | Integer paise avoid float drift (`10000 × 1.3 = 13000.000000000002`). **Simplification:** no reservation charge, GST, Tatkal min/max, or concessions. |
+| Quotas | Search shows one quota (`quota`, default GENERAL); availability shows every quota of every class | Matches the IRCTC flow: list first, details per train. |
+| Caching | **None yet.** Search reads Postgres directly. | Availability changes with every booking, and queries are already well under target. Redis caching (short TTL on the timetable part) is worth adding only once load tests show a need; cached counts must never be used to allocate (principle 6.2). |
+| Not yet | Station-to-city search (all Delhi stations), Tatkal opening window, segment-wise inventory | Listed simplifications; see Section 3 for per-journey inventory. |
+

@@ -2,8 +2,10 @@ import type { RequestHandler } from "express";
 import { idParamSchema, paginationSchema } from "../../shared/validation.js";
 import * as trainsService from "./trains.service.js";
 import { generateSchedules as generateSchedulesForTrain } from "./schedules.service.js";
+import { getAvailability, searchTrains } from "./search.service.js";
 import {
-    createTrainSchema, generateSchedulesSchema, replaceCoachesSchema, replaceRouteSchema, trainNumberParamSchema,
+    availabilityQuerySchema, createTrainSchema, generateSchedulesSchema, replaceCoachesSchema, replaceRouteSchema,
+    scheduleIdParamSchema, searchTrainsSchema, trainNumberParamSchema,
 } from "./trains.schemas.js";
 
 export const list: RequestHandler = async (req, res) => {
@@ -14,6 +16,17 @@ export const list: RequestHandler = async (req, res) => {
 export const getByNumber: RequestHandler = async (req, res) => {
     const { number } = trainNumberParamSchema.parse(req.params);
     res.json({ train: await trainsService.getTrainByNumber(number) });
+};
+
+export const search: RequestHandler = async (req, res) => {
+    const input = searchTrainsSchema.parse(req.query);
+    res.json(await searchTrains(input));
+};
+
+export const availability: RequestHandler = async (req, res) => {
+    const { scheduleId } = scheduleIdParamSchema.parse(req.params);
+    const query = availabilityQuerySchema.parse(req.query);
+    res.json(await getAvailability(scheduleId, query));
 };
 
 export const create: RequestHandler = async (req, res) => {

@@ -1,10 +1,9 @@
 import { z } from "zod";
-import { CoachClass, Weekday } from "../../generated/prisma/client.js";
-import { calendarDate, clockTime, stationCode } from "../../shared/validation.js";
+import { CoachClass, Quota, Weekday } from "../../generated/prisma/client.js";
+import { DAY_MS, calendarDate, clockTime, stationCode, todayUtc } from "../../shared/validation.js";
 
 const WEEK_ORDER = Object.values(Weekday); // ["MON", ..., "SUN"]
 const MAX_SCHEDULE_RANGE_DAYS = 120;
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 export const trainNumberSchema = z.string().regex(/^\d{5}$/, "Train number must be 5 digits");
 
@@ -104,3 +103,29 @@ export const generateSchedulesSchema = z
     });
 
 export type CreateTrainInput = z.infer<typeof createTrainSchema>;
+
+// --------------------------------------------------------------------------- search & availability
+
+// GET /trains/search?from=NDLS&to=MMCT&date=2026-11-01. `date` is the day the passenger boards at
+// `from`, which for a stop late in the route can be a day or two after the train left its origin.
+export const searchTrainsSchema = z
+    .object({
+        from: stationCode,
+        to: stationCode,
+        date: calendarDate,
+        quota: z.enum(Quota).default("GENERAL"),
+    })
+    .refine(({ from, to }) => from !== to, { message: "`from` and `to` must be different stations", path: ["to"] })
+    .refine(({ date }) => date >= todayUtc(), { message: "Can't search for a date in the past", path: ["date"] });
+
+export type SearchTrainsInput = z.infer<typeof searchTrainsSchema>;
+
+export const scheduleIdParamSchema = z.object({ scheduleId: z.uuid("Invalid schedule id") });
+
+// Both optional: without them, availability and fares are for the whole route.
+export const availabilityQuerySchema = z.object({
+    from: stationCode.optional(),
+    to: stationCode.optional(),
+});
+
+export type AvailabilityQuery = z.infer<typeof availabilityQuerySchema>;

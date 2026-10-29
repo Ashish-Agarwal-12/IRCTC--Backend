@@ -41,3 +41,19 @@ export function formatClock(totalMinutes: number): string {
 // "2026-11-01" → a Date at UTC midnight. Journey dates are calendar days with no time zone, so all
 // date maths is done in UTC to avoid a local time zone shifting a date by one day.
 export const calendarDate = z.iso.date("Date must be YYYY-MM-DD").transform((value) => new Date(`${value}T00:00:00Z`));
+
+export const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Today's date at UTC midnight, comparable with calendarDate values.
+export function todayUtc(): Date {
+    return new Date(new Date().toISOString().slice(0, 10) + "T00:00:00Z");
+}
+
+export function addDays(date: Date, days: number): Date {
+    return new Date(date.getTime() + days * DAY_MS);
+}
+
+// Date → "2026-11-01" (the reverse of calendarDate).
+export function toIsoDate(date: Date): string {
+    return date.toISOString().slice(0, 10);
+}
