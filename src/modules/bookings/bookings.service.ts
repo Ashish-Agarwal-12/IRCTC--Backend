@@ -9,7 +9,8 @@ import { todayUtc, toIsoDate, toSkipTake, type Pagination } from "../../shared/v
 import { allotPassengers, fareFor, isBookable } from "../trains/availability.js";
 import { bookingsTotal, passengersAllotted } from "../../shared/metrics.js";
 import { moment, resolveJourney } from "../trains/search.service.js";
-import { freeSeats, lockClassInventory, releaseExpiredHolds } from "./inventory.js";
+import { CLASS_LIMITS, classKey, freeSeats, lockClassInventory, releaseExpiredHolds } from "./inventory.js";
+import { perKey } from "../../shared/keyed-queue.js";
 import { pickSeats } from "./seat-picking.js";
 import { renderTicketPdf, ticketContent } from "./ticket.js";
 import type { CreateBookingInput } from "./bookings.schemas.js";
@@ -124,10 +125,27 @@ export async function createBooking(userId: string, input: CreateBookingInput, i
     if (!fareRule) throw new AppError(409, "FARE_NOT_SET", `No fare is set for ${input.class} yet`);
     const totalFare = fareFor(fareRule, distanceKm, input.quota) * input.passengers.length;
 
-    // ---- the locked part. Retried only on a PNR collision.
+    // ---- fail fast when sold out. In a Tatkal rush most requests arrive after the class is full;
+    // they shouldn't wait in line for the lock just to be told REGRET (load test: 609 of 906 rush
+    // requests were REGRET). This read is unlocked, so it may be a moment out of date, but only
+    // in the safe direction: places only come back through cancellations and expired holds, and
+    // a REGRET a few milliseconds before one is the same as arriving a few milliseconds earlier.
+    // Expired holds that the sweeper hasn't released yet do count: if there are any, take the
+    // locked path, which releases them first (nobody is refused a seat an expired hold sits on).
+    const unlocked = await prisma.seatInventory.findUniqueOrThrow({
+        where: { scheduleId_class_quota: { scheduleId: schedule.id, class: input.class, quota: input.quota } },
+    });
+    if (!allotPassengers(unlocked, input.passengers.length)) {
+        const expiredHolds = await prisma.booking.count({
+            where: { scheduleId: schedule.id, class: input.class, status: "PENDING_PAYMENT", holdExpiresAt: { lte: new Date() } },
+        });
+        if (expiredHolds === 0) throw new AppError(409, "REGRET", "No berths, RAC or waitlist places left for this class and quota");
+    }
+
+    // ---- the locked part, at most 2 per class at once in this process (see keyed-queue.ts). Retried only on a PNR collision.
     for (let attempt = 1; ; attempt++) {
         try {
-            const bookingId = await prisma.$transaction(
+            const bookingId = await perKey(classKey(schedule.id, input.class), CLASS_LIMITS, () => prisma.$transaction(
                 async (tx) => {
                     const now = new Date();
                     await lockClassInventory(tx, schedule.id, input.class);
@@ -218,9 +236,9 @@ export async function createBooking(userId: string, input: CreateBookingInput, i
                     return booking.id;
                 },
                 // READ COMMITTED is Postgres's default; stated because the code above depends on it.
-                // maxWait: how long to queue for a pool connection during a rush before giving up.
+                // maxWait: how long to wait for a pool connection before giving up.
                 { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, maxWait: 5_000, timeout: 10_000 },
-            );
+            ));
             const booking = await prisma.booking.findUniqueOrThrow({ where: { id: bookingId }, include: bookingInclude });
             // Counted after the commit, so a refused or rolled-back booking never shows up here.
             bookingsTotal.inc({ outcome: "held" });

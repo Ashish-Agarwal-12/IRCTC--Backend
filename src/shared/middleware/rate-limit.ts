@@ -6,9 +6,9 @@ import { env } from "../../config/env.js";
 // Behind a load balancer, also set `app.set("trust proxy", 1)` or every user shares the proxy's IP.
 //
 // Disabled by default under NODE_ENV=test: every test request comes from the same IP, so the
-// limits would trip mid-suite. The limiter's own test passes `{ skip: false }` to switch it on.
+// limits would trip mid-suite (load tests set DISABLE_RATE_LIMITS for the same reason). The limiter's own test passes `{ skip: false }` to switch it on.
 export function createRateLimiter(limit: number, windowMs: number, opts: { skip?: boolean } = {}) {
-    const skip = opts.skip ?? env.NODE_ENV === "test";
+    const skip = opts.skip ?? (env.NODE_ENV === "test" || env.DISABLE_RATE_LIMITS);
     return rateLimit({
         windowMs,
         limit,

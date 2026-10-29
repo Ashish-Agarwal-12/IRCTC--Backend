@@ -207,7 +207,7 @@ _Last updated: 2026-10-30_
 | 8. Confirmation, PNR, PDF tickets | Done (see 8.10) |
 | 9. Cancellations, refunds, RAC/WL promotion, chart preparation | Done (see 8.11) |
 | 10. Logging, metrics, tracing, alerts | Done (see 8.12) |
-| 11. Load and failure testing | Next |
+| 11. Load and failure testing | Done (see 8.13); the Tatkal-rush latency target is not met yet |
 
 ### 8.1 Foundations in place (Phase 0)
 
@@ -401,4 +401,38 @@ _Last updated: 2026-10-30_
 | Alerts | 10 rules in `ops/prometheus/alerts.yml` (validated with `promtool`): ApiDown, HighErrorRate (> 2% 5xx), SlowBookings (p95 > 2 s), SlowSearch (p95 > 200 ms), PaymentGatewayErrors (> 10%), RefundsStuck (> 30 min), EmailsFailed, EmailBacklog (> 10 min), JobFailing, JobStale (> 5 min) | Each maps to a requirement (performance targets, durability of money, notification delivery). Latency alerts need a minimum rate (found live: with ~30 requests, one cold-start request decided the p95). Verified live: stopping the API made ApiDown fire after ~90 s. |
 | Local stack | `prometheus` service in docker-compose (`prom/prometheus:v3.5.0`) scraping `host.docker.internal:3000` | See alerts work end to end on a laptop. **Not yet:** Alertmanager (routing to email/Slack/PagerDuty) and Grafana dashboards. |
 | Metric accuracy note | Promotions are counted inside the cascade's transaction, so they can overcount if it rolls back; everything else is counted after commit | Rare, and only affects a counter, never data. |
+
+### 8.13 Load and failure testing (roadmap step 11)
+
+`npm run load` (folder `load/`) runs the built server as a real process with its own database (`irctc_load`) and drives it over HTTP: real latency, real connection pool, and a process that can be killed. The client keeps up to 256 keep-alive connections, as a load balancer would. Without that, 500 brand-new TCP connections in the same millisecond overflow Windows' accept backlog (`ECONNREFUSED`), which says nothing about the API.
+
+**Test machine:** a 4-core laptop (i5-9300H) that also runs the load generator, Postgres (inside Docker Desktop's VM), a browser and an editor, with about 2.4 GB of 16 GB memory free and 27% CPU busy at idle. Run-to-run variation is large (search throughput 38–322/s with identical code), so the table gives the range over five runs. Correctness results were the same in every run.
+
+| Scenario | Result | Correctness (every run) |
+|---|---|---|
+| 500 simultaneous requests for one berth (requirement 2.1) | Last answer after 6.8–39 s | Exactly 1 confirmed, 1 berth allocated, WL 1–100 each issued once, 399 `REGRET`, 0 errors |
+| Search, 20 clients | p95 84–912 ms (target 200 ms: met on quiet runs) | All 200 |
+| Booking spread over trains and classes, 20 clients | p95 0.5–2.3 s (target 2 s: met on most runs) | All held |
+| Rush on one train + class, 100 clients | p95 2.9–13 s; 14–60 bookings/s for that class (**target 2 s: missed in every run**) | All held or `REGRET`; invariants hold |
+| Search while that rush runs | Before the fix: p50 693 ms, p95 843 ms, 7/s. After: p50 51–70 ms, p95 260–544 ms, 42–63/s | All 200 |
+| `kill -9` during 200 concurrent bookings | 25 answered before the kill, **40** stored: 15 committed but their responses were lost | No half-written bookings; counters, queues and berths consistent after restart |
+| Postgres frozen 8 s under traffic | `/health/ready` 503 after its 2 s timeout; requests waited up to ~10.7 s, then completed; first success 0–1 ms after the database came back | No restart needed; no corrupted data |
+
+**What the runs found, and what changed:**
+
+| Finding | Change | Why |
+|---|---|---|
+| A rush on one train starved the whole API: every booking waiting for the class's row lock held one of the pool's 10 connections, so search for other trains waited for a free connection (p95 188 → 843 ms) | `perKey()` (`shared/keyed-queue.ts`): bookings and cancellations wait in memory per schedule + class, at most **2** at a time in the database. Over 1000 waiting for one class → `503 TRAIN_BUSY` with `Retry-After`. | Waiting costs a promise instead of a connection. The database lock still guarantees correctness, including across several instances. |
+| With **1** at a time, the last-seat run went from 7 s to 20 s | 2 at a time | With 1, each transaction only starts after the previous one commits; with 2, the next one is already waiting at the row lock, so the hand-over is immediate. |
+| Sold-out requests (609 of 906 in one rush) waited in line just to hear `REGRET` | An unlocked pre-check refuses with `REGRET` when even the waitlist is full, unless the class has expired holds still waiting to be released | A stale read can only err towards "full" by milliseconds (places come back only through cancellations and expiries). Expired holds go through the locked path, which releases them first. |
+| The race tests would now pass even without `FOR UPDATE`, because the in-memory queue serialises them in one process | Race tests call `simulateSeparateInstances(true)` | They must keep proving the database lock, which is what protects several instances. Verified: removing `FOR UPDATE` still fails both. |
+| My own rush scenario booked with a missing schedule id: 20,943 `400`s counted as "no 5xx" | Booking checks accept only 201 or 409 `REGRET` | A check that can't fail proves nothing. |
+| The first crash test killed before any booking committed | It kills once 25 bookings have been answered | Otherwise "every answered booking survived" was trivially true. |
+
+**Still open (not met yet): the 2 s target in a Tatkal rush on one class.** Bookings for one class serialise on its lock by design. That is what makes "never double-book" hold, so throughput for one class is capped at 1 ÷ (time spent holding the lock). Here that is 15–70 ms, depending on how busy the CPU is: the server's event loop was delayed by up to 130–277 ms during rushes, because Prisma 7 builds queries in JavaScript on the main thread. More server instances don't raise the cap (they share the lock). Options, roughly in order of effort:
+
+1. Fewer round trips while holding the lock: return the counters and schedule status from the `FOR UPDATE` query itself (2 fewer queries).
+2. **Group commit:** take the waiting bookings for one class from the in-memory line in batches, and allot a whole batch in one transaction under one lock, with a savepoint per booking so one failure doesn't sink the others. This is the standard fix for a hot row.
+3. Split a class's inventory into several independently locked parts (for example by coach), trading some seat-picking freedom for parallelism.
+4. Measure on production-like hardware first (a dedicated database host, no browser and editor on the same cores), as Section 7 requires: some of the gap is this laptop.
 

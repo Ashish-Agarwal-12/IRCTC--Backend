@@ -221,6 +221,7 @@ export const operations: Operation[] = [
             403: error("Email not verified (`EMAIL_NOT_VERIFIED`)"),
             404: error("No such schedule"),
             409: error("`REGRET` (no berths, RAC or waitlist left), `BOOKING_CLOSED` or `FARE_NOT_SET`"),
+            503: error("`TRAIN_BUSY`: too many bookings waiting for this train and class right now; retry after `Retry-After` seconds"),
         },
     },
     {

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { simulateSeparateInstances } from "../src/shared/keyed-queue.js";
 
 vi.mock("../src/shared/mailer.js", () => ({ sendMail: vi.fn(async () => {}) }));
 
@@ -267,6 +268,10 @@ describe("cancellation refunds", () => {
 // --------------------------------------------------------------------------- concurrency
 
 describe("concurrent cancellations", () => {
+    // As if each request hit a different server instance: the in-memory per-class line
+    // (keyed-queue.ts) can't serialise them, so only the database lock stands between them.
+    beforeAll(() => simulateSeparateInstances(true));
+    afterAll(() => simulateSeparateInstances(false));
     it("keeps the queues consistent when many passengers cancel at once", async () => {
         await setInventory({ availableSeats: 6, racCapacity: 4 });
         const names = Array.from({ length: 16 }, (_, i) => `P${String(i + 1).padStart(2, "0")}`);

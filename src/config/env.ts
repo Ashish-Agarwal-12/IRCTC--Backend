@@ -34,6 +34,13 @@ export const envSchema = z.object({
     // Bearer token Prometheus must send to GET /metrics. Optional in development; without it,
     // /metrics isn't served in production at all.
     METRICS_TOKEN: z.string().min(16, "METRICS_TOKEN must be at least 16 characters").optional(),
+
+    // Load tests only: every request comes from one machine, so per-IP limits would measure the
+    // limiter instead of the system. Refused in production (see the refine below).
+    DISABLE_RATE_LIMITS: z.stringbool().default(false),
+}).refine((e) => !(e.NODE_ENV === "production" && e.DISABLE_RATE_LIMITS), {
+    message: "DISABLE_RATE_LIMITS is for load tests and can't be used in production",
+    path: ["DISABLE_RATE_LIMITS"],
 }).refine((e) => !!e.RAZORPAY_KEY_ID === !!e.RAZORPAY_KEY_SECRET, {
     message: "Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET together",
     path: ["RAZORPAY_KEY_SECRET"],

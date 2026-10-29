@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { simulateSeparateInstances } from "../src/shared/keyed-queue.js";
 import { prisma } from "../src/shared/prisma.js";
 import { WAITLIST_LIMIT, allotPassengers } from "../src/modules/trains/availability.js";
 import { pickSeats, type FreeSeat } from "../src/modules/bookings/seat-picking.js";
@@ -148,6 +149,10 @@ describe("Idempotency-Key", () => {
 // --------------------------------------------------------------------------- concurrency
 
 describe("concurrent bookings", () => {
+    // As if each request hit a different server instance: the in-memory per-class line
+    // (keyed-queue.ts) can't serialise them, so only the database lock stands between them.
+    beforeAll(() => simulateSeparateInstances(true));
+    afterAll(() => simulateSeparateInstances(false));
     it("gives the last berth to exactly one of 30 simultaneous requests; the rest are waitlisted in order", async () => {
         await setInventory({ availableSeats: 1, racCapacity: 0, racBooked: 0 });
 

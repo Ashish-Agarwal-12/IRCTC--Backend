@@ -20,6 +20,8 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
     }
     if (err instanceof AppError) {
         httpErrors.inc({ code: err.code });
+        // 503 TRAIN_BUSY: tell well-behaved clients when to try again.
+        if ("retryAfterSeconds" in err) res.setHeader("Retry-After", String(err.retryAfterSeconds));
         res.status(err.statusCode).json({
             error: { code: err.code, message: err.message, details: err.details }
         });

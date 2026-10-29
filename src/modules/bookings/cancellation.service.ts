@@ -12,7 +12,8 @@ import { departureInstant } from "../trains/search.service.js";
 import { enqueueNotification } from "../notifications/enqueue.js";
 import { processRefund } from "../payments/refunds.js";
 import { bookingInclude, toBookingView } from "./bookings.service.js";
-import { lockClassInventory, releasePassengers } from "./inventory.js";
+import { CLASS_LIMITS, classKey, lockClassInventory, releasePassengers } from "./inventory.js";
+import { perKey } from "../../shared/keyed-queue.js";
 import { cancellationRefund } from "./refund-rules.js";
 import { passengersCancelled } from "../../shared/metrics.js";
 
@@ -79,7 +80,7 @@ export async function cancelBooking(userId: string, pnr: string, positions: numb
     const found = await prisma.booking.findFirst({ where: { pnr, userId }, select: { id: true, scheduleId: true, class: true } });
     if (!found) throw new NotFoundError("Booking");
 
-    const result = await prisma.$transaction(async (tx) => {
+    const result = await perKey(classKey(found.scheduleId, found.class), CLASS_LIMITS, () => prisma.$transaction(async (tx) => {
         await lockClassInventory(tx, found.scheduleId, found.class);
         const booking = await lockBooking(tx, found.id);
 
@@ -100,7 +101,7 @@ export async function cancelBooking(userId: string, pnr: string, positions: numb
             }
         }
         return cancelPassengersLocked(tx, booking, targets.map((p) => p.id), "Cancelled by you", now);
-    }, TX_OPTIONS);
+    }, TX_OPTIONS));
 
     passengersCancelled.inc({ reason: "user" }, result.lines.length);
     // Pay it out now if Razorpay answers; otherwise the reconciliation job retries.

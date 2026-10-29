@@ -55,6 +55,19 @@ The document is generated from code ([src/docs/](src/docs/)). Request shapes are
 - **Health:** `GET /health` is liveness (the process answers). `GET /health/ready` is readiness: 503 if the database is unreachable, `degraded` if a background job has stopped succeeding.
 - **Alerts:** API down, 5xx rate, slow booking (p95 > 2 s) and search (p95 > 200 ms), Razorpay errors, refunds owed for over 30 min, failed or backed-up emails, failing or stalled background jobs.
 
+## Load and failure tests
+
+`npm run load` builds the server, starts it as a real process on port 3100 with its own `irctc_load` database (your dev data is untouched), and runs:
+
+| Scenario | What it proves |
+|---|---|
+| `last-seat` | 500 simultaneous requests for one berth: exactly one wins, waitlist 1–100 issued once each, the rest `REGRET`, no errors |
+| `latency` | Search and booking latency against the targets, a rush of 100 clients on one train, and whether that rush slows down search for everyone else |
+| `crash` | `kill -9` in the middle of 200 concurrent bookings: after a restart, no half-written booking and every counter, queue and berth consistent |
+| `db-pause` | Postgres frozen for 8 s under traffic (`docker pause`): readiness says 503, the server recovers on its own, no corrupted data |
+
+Run one with `npm run load -- last-seat`. The report goes to `load/results/report.md`. Correctness checks fail the run; latency targets are reported as met or missed, because they depend on the machine. Takes about 3 minutes; needs Docker Compose's Postgres.
+
 ## Scripts
 
 | Command | What it does |
@@ -64,6 +77,7 @@ The document is generated from code ([src/docs/](src/docs/)). Request shapes are
 | `npm start` | Runs the compiled server from `dist/` |
 | `npm test` | Runs the test suite once (needs Postgres running; uses a separate `irctc_test` database) |
 | `npm run test:watch` | Re-runs tests on every file change |
+| `npm run load` | Load and failure tests against a real server process (see above) |
 | `npx prisma generate` | Regenerates the Prisma client after a schema change or a fresh checkout |
 | `npx prisma migrate dev` | Creates and applies migrations in development |
 | `npx prisma db seed` | Seeds admin, stations, trains, fares and schedules (`prisma/seed.ts`, data in `prisma/seed-data.ts`) |
@@ -87,6 +101,7 @@ Validated at startup by [src/config/env.ts](src/config/env.ts). The server refus
 | `MAIL_FROM` | `IRCTC <no-reply@irctc.local>` | Sender address |
 | `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` | `rzp_test_...` | Razorpay **test-mode** API keys. Optional; without them the payment endpoints answer 503. A live key (`rzp_live_...`) is refused at startup. |
 | `RAZORPAY_WEBHOOK_SECRET` | | Secret set on the webhook in the Razorpay dashboard. Optional; needed only to receive webhooks. |
+| `DISABLE_RATE_LIMITS` | `false` | Load tests only (all traffic comes from one IP). Refused in production. |
 | `METRICS_TOKEN` | 16+ chars | Bearer token for `GET /metrics`. Optional in development; without it, metrics are not served in production. |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | | Used only by the seed script |
 

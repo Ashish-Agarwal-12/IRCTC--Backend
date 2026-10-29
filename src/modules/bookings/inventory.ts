@@ -27,6 +27,14 @@ export async function lockClassInventory(tx: Tx, scheduleId: string, coachClass:
         FOR UPDATE`;
 }
 
+// Bookings and cancellations wait their turn in memory first, under this key, so that waiting for
+// the lock doesn't hold a database connection (see shared/keyed-queue.ts).
+export const classKey = (scheduleId: string, coachClass: CoachClass) => `${scheduleId}:${coachClass}`;
+// 2 at a time per class: one holding the lock, one already waiting at it (keyed-queue.ts says why).
+// Beyond 1000 waiting for one class in one process, answer 503 TRAIN_BUSY with Retry-After rather
+// than queue: at ~15–20 ms per booking, that is already 15–20 s of waiting.
+export const CLASS_LIMITS = { concurrency: 2, maxWaiting: 1000 };
+
 // Seats of this class on this train with no allocation on this schedule.
 export async function freeSeats(tx: Tx, scheduleId: string, trainId: string, coachClass: CoachClass) {
     const seats = await tx.seat.findMany({
