@@ -20,6 +20,7 @@ import { GatewayRejectedError, fromRazorpay, paymentGateway, type GatewayPayment
 import { isValidCheckoutSignature, isValidWebhookSignature } from "./signatures.js";
 import { webhookEventSchema, type VerifyPaymentInput } from "./payments.schemas.js";
 import { enqueueNotification } from "../notifications/enqueue.js";
+import { paymentsSettled, refundsTotal } from "../../shared/metrics.js";
 
 // --------------------------------------------------------------------------- 1. order
 
@@ -140,6 +141,12 @@ export type SettleResult = "CONFIRMED" | "REFUND_PENDING" | "REFUNDED" | "NOT_PA
 
 // Applies what Razorpay says about one payment to our database. Idempotent.
 export async function settlePayment(reported: GatewayPayment): Promise<SettleResult> {
+    const result = await settle(reported);
+    paymentsSettled.inc({ result });
+    return result;
+}
+
+async function settle(reported: GatewayPayment): Promise<SettleResult> {
     let gatewayPayment = reported;
 
     if (gatewayPayment.status === "failed" || gatewayPayment.status === "created") {
@@ -259,9 +266,11 @@ export async function refundOwed(paymentRowId: string): Promise<boolean> {
             where: { id: payment.id, status: "REFUND_PENDING" },
             data: { status: "REFUNDED", ...(refundId && { refundId }) },
         });
+        refundsTotal.inc({ kind: "unusable_payment", outcome: "processed" });
         return true;
     } catch (err) {
         logger.error({ err, paymentId: payment.id }, "Refund failed; the reconciliation job will retry");
+        refundsTotal.inc({ kind: "unusable_payment", outcome: "failed" });
         return false;
     }
 }

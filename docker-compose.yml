@@ -14,5 +14,11 @@ services:
     # Fake SMTP server for development: catches every email; view them at http://localhost:8025
     image: axllent/mailpit:v1.27
     ports: ["1025:1025", "8025:8025"]
+  prometheus:
+    # Scrapes the API on your machine and evaluates ops/prometheus/alerts.yml. UI at http://localhost:9090
+    image: prom/prometheus:v3.5.0
+    ports: ["9090:9090"]
+    volumes: ["./ops/prometheus:/etc/prometheus:ro"]
+    extra_hosts: ["host.docker.internal:host-gateway"] # Linux; Docker Desktop has it built in
 volumes:
   pgdata:

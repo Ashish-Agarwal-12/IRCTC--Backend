@@ -47,6 +47,14 @@ With the server running (any environment except production):
 
 The document is generated from code ([src/docs/](src/docs/)). Request shapes are the same Zod schemas the controllers validate with, so they can't drift. Response shapes are strict Zod schemas that the test suite checks **every real response** against (see [test/contract.ts](test/contract.ts)). A test also fails if a route exists without docs, or the docs list a route that doesn't exist. **When you add an endpoint, add it to `src/docs/operations.ts`.**
 
+## Monitoring (metrics and alerts)
+
+`docker compose up -d` also starts **Prometheus** (http://localhost:9090), which scrapes the API's `GET /metrics` every 15 s and evaluates the alert rules in [ops/prometheus/alerts.yml](ops/prometheus/alerts.yml). The **Alerts** tab shows what is firing; stop the API for about 90 s and `ApiDown` fires.
+
+- **Logs:** every line carries `requestId` and `traceId` (HTTP requests) or `job` and `runId` (background jobs), including lines logged deep inside services. To see everything one request did, search for its `x-request-id`. Incoming W3C `traceparent` headers are continued.
+- **Health:** `GET /health` is liveness (the process answers). `GET /health/ready` is readiness: 503 if the database is unreachable, `degraded` if a background job has stopped succeeding.
+- **Alerts:** API down, 5xx rate, slow booking (p95 > 2 s) and search (p95 > 200 ms), Razorpay errors, refunds owed for over 30 min, failed or backed-up emails, failing or stalled background jobs.
+
 ## Scripts
 
 | Command | What it does |
@@ -79,6 +87,7 @@ Validated at startup by [src/config/env.ts](src/config/env.ts). The server refus
 | `MAIL_FROM` | `IRCTC <no-reply@irctc.local>` | Sender address |
 | `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` | `rzp_test_...` | Razorpay **test-mode** API keys. Optional; without them the payment endpoints answer 503. A live key (`rzp_live_...`) is refused at startup. |
 | `RAZORPAY_WEBHOOK_SECRET` | | Secret set on the webhook in the Razorpay dashboard. Optional; needed only to receive webhooks. |
+| `METRICS_TOKEN` | 16+ chars | Bearer token for `GET /metrics`. Optional in development; without it, metrics are not served in production. |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | | Used only by the seed script |
 
 ## Project structure
@@ -134,17 +143,20 @@ src/
     validation.ts        # shared Zod pieces: pagination, ids, station codes, HH:mm, dates
     error.ts             # AppError and subclasses
     error-handler.ts     # 404 + central error handler
-    logger.ts            # shared Pino logger with PII redaction
+    logger.ts            # shared Pino logger with PII redaction; adds request/job ids to every line
+    context.ts           # AsyncLocalStorage request/job context, W3C traceparent
+    metrics.ts           # every Prometheus metric, in one place
     mailer.ts            # nodemailer transport
     prisma.ts            # Prisma client
     middleware/
       authenticate.ts    # authenticate + requireRole(...)
       rate-limit.ts      # createRateLimiter(limit, windowMs)
-    interval-job.ts      # startIntervalJob(): background jobs in the server process
+    interval-job.ts      # startIntervalJob(): background jobs, with run ids, metrics and health
   types/express.d.ts     # adds req.user to Express's Request type
   generated/prisma/      # generated Prisma client (git-ignored)
 test/                    # Vitest + Supertest suites, helpers, test-DB setup, API contract checks
 docs/requirements.md     # requirements, design, roadmap, status
+ops/prometheus/          # Prometheus config and alert rules (used by docker compose)
 ```
 
 ## API conventions
@@ -162,7 +174,9 @@ docs/requirements.md     # requirements, design, roadmap, status
 | Method | Path | Status |
 |---|---|---|
 | `GET` | `/docs`, `/openapi.json` | Swagger UI and the OpenAPI document (not served in production) |
-| `GET` | `/health` | Available |
+| `GET` | `/health` | Liveness |
+| `GET` | `/health/ready` | Readiness: database and background jobs; 503 if the database is down |
+| `GET` | `/metrics` | Prometheus metrics (bearer `METRICS_TOKEN` if set; not served in production without one) |
 | `POST` | `/auth/register` | `{ email, password, firstName, lastName, phone? }` → 201 `{ user }`, sends verification email |
 | `POST` | `/auth/verify-email` | `{ token }` → 204 |
 | `POST` | `/auth/resend-verification` | `{ email }` → 202 (always) |

@@ -7,6 +7,7 @@ import { prisma } from "../../shared/prisma.js";
 import { AppError, BadRequestError, ForbiddenError, NotFoundError, UnauthorizedError } from "../../shared/error.js";
 import { todayUtc, toIsoDate, toSkipTake, type Pagination } from "../../shared/validation.js";
 import { allotPassengers, fareFor, isBookable } from "../trains/availability.js";
+import { bookingsTotal, passengersAllotted } from "../../shared/metrics.js";
 import { moment, resolveJourney } from "../trains/search.service.js";
 import { freeSeats, lockClassInventory, releaseExpiredHolds } from "./inventory.js";
 import { pickSeats } from "./seat-picking.js";
@@ -79,7 +80,10 @@ export async function createBooking(userId: string, input: CreateBookingInput, i
     // Keys are scoped per user, so two users can't collide on (or probe) each other's keys.
     const key = `${userId}:${idempotencyKey}`;
     const replay = await findByIdempotencyKey(key);
-    if (replay) return { booking: replay, created: false };
+    if (replay) {
+        bookingsTotal.inc({ outcome: "replayed" });
+        return { booking: replay, created: false };
+    }
 
     // ---- checks that need no lock
     const user = await prisma.user.findUnique({ where: { id: userId } });
@@ -218,6 +222,9 @@ export async function createBooking(userId: string, input: CreateBookingInput, i
                 { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, maxWait: 5_000, timeout: 10_000 },
             );
             const booking = await prisma.booking.findUniqueOrThrow({ where: { id: bookingId }, include: bookingInclude });
+            // Counted after the commit, so a refused or rolled-back booking never shows up here.
+            bookingsTotal.inc({ outcome: "held" });
+            for (const p of booking.passengers) passengersAllotted.inc({ status: p.status });
             return { booking: toBookingView(booking), created: true };
         } catch (err) {
             if (!isUniqueViolation(err)) throw err;
@@ -225,7 +232,10 @@ export async function createBooking(userId: string, input: CreateBookingInput, i
             // or the random PNR collided (retry). The failed transaction was rolled back either way,
             // so no seats or counters were taken.
             const winner = await findByIdempotencyKey(key);
-            if (winner) return { booking: winner, created: false };
+            if (winner) {
+                bookingsTotal.inc({ outcome: "replayed" });
+                return { booking: winner, created: false };
+            }
             if (attempt >= 3) throw err;
         }
     }

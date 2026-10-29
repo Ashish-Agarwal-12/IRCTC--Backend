@@ -206,8 +206,8 @@ _Last updated: 2026-10-30_
 | 7. Payments | Done, **Razorpay test mode only** (see 8.9) |
 | 8. Confirmation, PNR, PDF tickets | Done (see 8.10) |
 | 9. Cancellations, refunds, RAC/WL promotion, chart preparation | Done (see 8.11) |
-| 10. Logging, metrics, tracing, alerts | Next (structured logs and request IDs are already in place) |
-| 11. Load and failure testing | Not started |
+| 10. Logging, metrics, tracing, alerts | Done (see 8.12) |
+| 11. Load and failure testing | Next |
 
 ### 8.1 Foundations in place (Phase 0)
 
@@ -287,6 +287,7 @@ _Last updated: 2026-10-30_
   - Tickets and emails: ticket content (CNF/RAC/WL notation, lakh-grouped rupees), PDF download (owner only, paid only), confirmation email with the PDF attached, refund email, retries with backoff, giving up after 8 attempts, recovery after an SMTP outage.
   - **Outbox race:** three workers delivering at once send each email exactly once. Removing `FOR UPDATE SKIP LOCKED` sends every email twice (verified, 3 of 3 runs).
   - Cancellations: refund rules (every time band, Tatkal, RAC/WL, IST departure times), the cascade (berth → RAC 1 → WL 1, positions moving up, berths back to the pool), partial cancellation, expired holds promoting the queue, unpaid cancellations, refunds surviving a Razorpay outage, no double refund after a crash, chart preparation (WL cancelled and refunded, RAC kept, booking closed, runs at the 4-hour mark, idempotent). Every scenario checks the queue invariants: positions 1..n, counters equal queue lengths, one berth per confirmed passenger.
+  - Observability: the request context surviving awaits, `traceparent` parsing, per-run job ids, no field leaking between log lines, route-template labels (no PNRs), business counters, backlog gauges read from the database, the metrics token, readiness (database, healthy and stalled jobs), and the real Razorpay client against a stubbed `fetch` (auth header, body, ok / rejected / unavailable timing).
   - **Cancellation races:** 8 simultaneous cancellations leave the queues consistent, with berths going to the first in line; a double cancel refunds once; bookings racing cancellations keep the invariants. Removing the class lock from cancellation made 7 of 8 cancellations fail (verified, 3 of 3 runs).
 
 ### 8.6 API documentation
@@ -382,4 +383,22 @@ _Last updated: 2026-10-30_
 | Emails | `BOOKING_CANCELLED` (per-passenger refund breakdown, in the outbox payload) and `STATUS_CHANGED` (passengers promoted WL → RAC or RAC → CNF, with a fresh ticket), both via the outbox | Users learn about promotions without polling. Unpaid bookings get no email (nothing paid, and the confirmation will show the status). |
 | RAC berths | RAC passengers still have no berth number | Two RAC passengers share one side-lower, which `SeatAllocation` (one passenger per seat) doesn't model. **Not yet.** |
 | Not yet | Segment-wise vacancy (a berth freed after an intermediate station), TDR, GST on charges, concessions | Listed simplifications. |
+
+### 8.12 Observability: logs, metrics, tracing, alerts (roadmap step 10)
+
+| Decision | Choice | Why |
+|---|---|---|
+| Request context | `AsyncLocalStorage` (`context.ts`), entered right after pino-http assigns the request id; the logger's `mixin` adds `requestId` + `traceId` to every line | Previously only pino-http's own "request completed" line had the id; warnings logged inside services (refresh-token reuse, refunds failing) didn't, so they couldn't be tied to a request. Now one id finds everything. |
+| Mixin copy | `logFields()` returns a fresh object each time | Found in the live check: pino merges each call's fields into the mixin's result, so returning the stored context leaked one warning's `userId` into every later line of that request. Covered by a test. |
+| Tracing | W3C `traceparent`: an incoming trace id is continued (echoed with a new span id), otherwise one is created; it's on every log line | Joins our logs with a load balancer's or frontend's trace. **Not** full distributed tracing: no spans exported. OpenTelemetry (SDK + collector + Jaeger/Tempo) is the next step if per-query timing across services is needed; with one service, request ids plus metrics cover most of it. |
+| Background jobs | Each run has `job` + a fresh `runId` in its log context, is timed and counted, and records its last success | A failing or stalled job is visible in logs, metrics and `/health/ready`. |
+| Metrics | `prom-client`, all defined in `metrics.ts`, served at `GET /metrics` | Prometheus is the standard pull model: nothing to push, and Prometheus itself detects a dead instance (`up == 0`). |
+| Labels | Route **templates** (`/bookings/:pnr`), status codes, outcomes; never PNRs, user ids or URLs. Job label is `task` | Each label value is a separate time series, so unbounded values would exhaust Prometheus. Found in the live check: a label named `job` collides with Prometheus' own target label and is renamed `exported_job`, which would have broken the job alerts. |
+| What's measured | HTTP latency/status per route; error codes; bookings held/replayed; passengers allotted, promoted, cancelled; payments settled; refunds; emails; charts; Razorpay call latency by operation and outcome (ok / rejected / unavailable); job runs, duration, last success; process CPU, memory, event-loop lag | Covers the four golden signals (latency, traffic, errors, saturation) plus the business flows that must never silently stop. |
+| Backlog gauges | Pending/failed emails, oldest pending email, refunds owed (cancellation and unusable-payment), oldest refund owed: read from Postgres at scrape time | Always current and survive restarts, unlike in-memory counters. A failed read keeps the last value instead of breaking the scrape. |
+| Metrics access | `METRICS_TOKEN` bearer (constant-time compare); open in dev/test; not served in production without a token | Metrics reveal traffic and business volume. |
+| Health | `/health` liveness (no dependencies); `/health/ready` checks the database (2 s timeout, 503 if down) and reports jobs that haven't succeeded for 3 intervals as `degraded` | A restart can't fix a database outage, so liveness ignores it; readiness takes the instance out of the load balancer instead. |
+| Alerts | 10 rules in `ops/prometheus/alerts.yml` (validated with `promtool`): ApiDown, HighErrorRate (> 2% 5xx), SlowBookings (p95 > 2 s), SlowSearch (p95 > 200 ms), PaymentGatewayErrors (> 10%), RefundsStuck (> 30 min), EmailsFailed, EmailBacklog (> 10 min), JobFailing, JobStale (> 5 min) | Each maps to a requirement (performance targets, durability of money, notification delivery). Latency alerts need a minimum rate (found live: with ~30 requests, one cold-start request decided the p95). Verified live: stopping the API made ApiDown fire after ~90 s. |
+| Local stack | `prometheus` service in docker-compose (`prom/prometheus:v3.5.0`) scraping `host.docker.internal:3000` | See alerts work end to end on a laptop. **Not yet:** Alertmanager (routing to email/Slack/PagerDuty) and Grafana dashboards. |
+| Metric accuracy note | Promotions are counted inside the cascade's transaction, so they can overcount if it rolls back; everything else is counted after commit | Rare, and only affects a counter, never data. |
 

@@ -1,0 +1,109 @@
+# Alert rules: "detect failures before users report them" (requirements, non-functional 6).
+# Each alert names the symptom, how bad it is, and where to look first.
+#
+# severity: critical = someone acts now (money or bookings at risk); warning = look today.
+
+groups:
+  - name: availability
+    rules:
+      - alert: ApiDown
+        expr: up{job="irctc-api"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "The API is not answering /metrics"
+          description: "Prometheus can't scrape {{ $labels.instance }}. Check the process, then GET /health/ready."
+
+      - alert: HighErrorRate
+        # Share of requests answered 5xx over 5 minutes.
+        expr: |
+          sum(rate(http_request_duration_seconds_count{status=~"5.."}[5m]))
+            / clamp_min(sum(rate(http_request_duration_seconds_count[5m])), 1e-9) > 0.02
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "More than 2% of requests are failing with 5xx"
+          description: "Search the logs for 'Unhandled error' and group by requestId; http_errors_total{code=\"INTERNAL_ERROR\"} shows the trend."
+
+  - name: performance
+    rules:
+      - alert: SlowBookings
+        # Target: booking completes in under 2 s. Only judged with at least 1 booking every 5 s:
+        # with a handful of requests, one cold-start request decides the p95 on its own.
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(http_request_duration_seconds_bucket{method="POST", route="/bookings"}[5m]))) > 2
+          and on() sum(rate(http_request_duration_seconds_count{method="POST", route="/bookings"}[5m])) > 0.2
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "p95 booking time is above 2 s"
+          description: "Likely lock contention on one train (a Tatkal rush) or a slow database. Check job_duration_seconds and Postgres."
+
+      - alert: SlowSearch
+        # Target: train search in under 200 ms. Only judged with at least 1 search a second (see SlowBookings).
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(http_request_duration_seconds_bucket{method="GET", route="/trains/search"}[5m]))) > 0.2
+          and on() sum(rate(http_request_duration_seconds_count{method="GET", route="/trains/search"}[5m])) > 1
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "p95 train search is above 200 ms"
+          description: "Consider the Redis cache noted in requirements 8.7."
+
+  - name: payments
+    rules:
+      - alert: PaymentGatewayErrors
+        expr: |
+          sum(rate(payment_gateway_request_duration_seconds_count{outcome="unavailable"}[5m]))
+            / clamp_min(sum(rate(payment_gateway_request_duration_seconds_count[5m])), 1e-9) > 0.1
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "More than 10% of Razorpay calls are failing (5xx, timeouts, network)"
+          description: "Users can't pay; holds keep their seats for 10 minutes. The reconciliation job catches up once Razorpay is back."
+
+      - alert: RefundsStuck
+        # Money owed to users and not yet paid out.
+        expr: refunds_oldest_pending_age_seconds > 1800
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "A refund has been owed for more than 30 minutes"
+          description: "See refunds_pending by kind; Refund.lastError / Payment.lastError hold the gateway's reason."
+
+  - name: notifications
+    rules:
+      - alert: EmailsFailed
+        expr: outbox_messages{status="FAILED"} > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $value }} emails gave up after 8 attempts"
+          description: "Users may be missing tickets. OutboxMessage.lastError has the SMTP error; reset status to PENDING to retry."
+
+      - alert: EmailBacklog
+        expr: outbox_oldest_pending_age_seconds > 600
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "An email has waited more than 10 minutes to be sent"
+          description: "SMTP down or the email-outbox job stopped. Check job_runs_total{task=\"email-outbox\"}."
+
+  - name: background-jobs
+    rules:
+      - alert: JobFailing
+        expr: increase(job_runs_total{outcome="failure"}[10m]) > 3
+        labels: { severity: warning }
+        annotations:
+          summary: "Background job {{ $labels.task }} failed more than 3 times in 10 minutes"
+          description: "Search the logs for job={{ $labels.task }} 'Background job failed'; each run has its own runId."
+
+      - alert: JobStale
+        # Hold expiry runs every 15 s, the others every 10–60 s: 5 minutes without a success means it's stuck.
+        expr: time() - job_last_success_timestamp_seconds > 300
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "Background job {{ $labels.task }} hasn't succeeded for 5 minutes"
+          description: "hold-expiry stale = seats stuck on unpaid holds; payment-reconciliation stale = lost payments not recovered; chart-preparation stale = waitlists not cleared."

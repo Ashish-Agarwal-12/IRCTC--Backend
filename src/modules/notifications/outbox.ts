@@ -16,6 +16,7 @@ import { logger } from "../../shared/logger.js";
 import { prisma } from "../../shared/prisma.js";
 import { sendMail, type Attachment } from "../../shared/mailer.js";
 import { startIntervalJob } from "../../shared/interval-job.js";
+import { emailsTotal } from "../../shared/metrics.js";
 import { bookingInclude, ticketPdfFor, toBookingView } from "../bookings/bookings.service.js";
 import { passengerStatus, rupees } from "../bookings/ticket.js";
 
@@ -56,6 +57,7 @@ export async function deliverOutbox(now = new Date()): Promise<number> {
                 data: { status: "SENT", sentAt: new Date(), lastError: email ? null : "Skipped: no longer applies" },
             });
             if (email) sent += 1;
+            emailsTotal.inc({ type: message.type, outcome: email ? "sent" : "skipped" });
         } catch (err) {
             const giveUp = message.attempts >= MAX_ATTEMPTS;
             await prisma.outboxMessage.update({
@@ -66,6 +68,7 @@ export async function deliverOutbox(now = new Date()): Promise<number> {
                     lastError: err instanceof Error ? err.message.slice(0, 500) : String(err),
                 },
             });
+            emailsTotal.inc({ type: message.type, outcome: giveUp ? "gave_up" : "retry" });
             // The error and ids only: the recipient's address is PII and stays out of the logs.
             logger[giveUp ? "error" : "warn"]({ err, messageId: message.id, attempts: message.attempts }, giveUp ? "Gave up sending email" : "Email failed; will retry");
         }

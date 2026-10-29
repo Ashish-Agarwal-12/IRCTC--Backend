@@ -8,6 +8,7 @@
 import { logger } from "../../shared/logger.js";
 import { prisma } from "../../shared/prisma.js";
 import { paymentGateway } from "./gateway.js";
+import { refundsTotal } from "../../shared/metrics.js";
 
 // Returns true once the refund is PROCESSED. Safe to call any number of times, from anywhere.
 export async function processRefund(refundId: string): Promise<boolean> {
@@ -25,10 +26,12 @@ export async function processRefund(refundId: string): Promise<boolean> {
             where: { id: refund.id, status: "PENDING" },
             data: { status: "PROCESSED", gatewayRefundId, processedAt: new Date(), lastError: null },
         });
+        refundsTotal.inc({ kind: "cancellation", outcome: "processed" });
         return true;
     } catch (err) {
         await prisma.refund.update({ where: { id: refund.id }, data: { lastError: err instanceof Error ? err.message.slice(0, 500) : String(err) } });
         logger.error({ err, refundId: refund.id }, "Refund failed; the reconciliation job will retry");
+        refundsTotal.inc({ kind: "cancellation", outcome: "failed" });
         return false;
     }
 }

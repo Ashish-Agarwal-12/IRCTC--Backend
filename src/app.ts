@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
-import express, { Router } from "express";
+import express, { Router, type RequestHandler } from "express";
 import { pinoHttp } from "pino-http";
 import swaggerUi from "swagger-ui-express";
 import { env } from "./config/env.js";
 import { logger, redactUrl } from "./shared/logger.js";
+import { requestContext } from "./shared/context.js";
+import { httpRequestDuration } from "./shared/metrics.js";
 import { errorHandler, notFoundHandler } from "./shared/error-handler.js";
 import { authenticate, requireRole } from "./shared/middleware/authenticate.js";
 import { buildOpenApiDocument } from "./docs/openapi.js";
@@ -38,6 +40,30 @@ export const adminMounts: { path: string; router: Router }[] = [
     { path: "/schedules", router: adminChartRouter },
 ];
 
+// Times every request into http_request_duration_seconds. The route label is the route *template*
+// ("/bookings/:pnr"), never the actual URL, so there is one time series per endpoint rather than
+// one per PNR. A request refused inside a router before any route matched (a 401 from
+// bookings' router-wide login check) is labelled "/bookings/*"; anything else no route matched
+// (404s, the docs UI) is "unmatched".
+const timeRequests: RequestHandler = (req, res, next) => {
+    const end = httpRequestDuration.startTimer({ method: req.method });
+    res.on("finish", () => {
+        const route = req.route
+            ? (res.locals.mountPath + req.route.path).replace(/(.)\/$/, "$1")
+            : res.locals.mountPath ? `${res.locals.mountPath}/*` : "unmatched";
+        end({ route, status: String(res.statusCode) });
+    });
+    next();
+};
+
+// Remembers which mount the request entered, for the route label above. By the time "finish"
+// fires, Express has already reset req.baseUrl (e.g. after an error left the router), so it's
+// recorded on the way in. The last mount entered before the route matched is the right one.
+const rememberMount: RequestHandler = (req, res, next) => {
+    res.locals.mountPath = req.baseUrl;
+    next();
+};
+
 export function buildApp() {
     const app = express();
 
@@ -61,6 +87,8 @@ export function buildApp() {
             },
         },
     }));
+    app.use(requestContext); // requestId + traceId for every log line from here on (see context.ts)
+    app.use(timeRequests);
     app.use(express.json({
         // Keep the raw bytes for the payment webhook, whose signature is over the body exactly as sent.
         verify: (req, _res, buf) => {
@@ -82,13 +110,13 @@ export function buildApp() {
     }
 
     for (const { path, router } of publicMounts) {
-        app.use(path, router);
+        app.use(path, rememberMount, router);
     }
 
     const admin = Router();
     admin.use(authenticate, requireRole("ADMIN"));
     for (const { path, router } of adminMounts) {
-        admin.use(path, router);
+        admin.use(path, rememberMount, router);
     }
     app.use("/admin", admin);
 

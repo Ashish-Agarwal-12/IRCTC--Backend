@@ -4,6 +4,7 @@
 import { Prisma, type CoachClass, type PassengerStatus, type Quota } from "../../generated/prisma/client.js";
 import { enqueueNotification } from "../notifications/enqueue.js";
 import { pickSeats } from "./seat-picking.js";
+import { passengersPromoted } from "../../shared/metrics.js";
 
 type Tx = Prisma.TransactionClient;
 
@@ -84,6 +85,8 @@ const queueHead = (tx: Tx, key: QueueKey, status: "RAC" | "WAITLISTED") =>
 //   1. Each confirmed berth freed goes to RAC 1; if there's no RAC, to WL 1; if nobody waits, back to the pool.
 //   2. Each RAC place freed (an RAC passenger left, or RAC 1 just got a berth) goes to WL 1.
 //   3. Renumber both queues so positions are 1..n again.
+// (The promotion metric is counted here, inside the transaction, so it can overcount if the caller
+// later rolls back; that's rare and only affects a counter, never the data.)
 // Returns the ids of bookings whose passengers moved up.
 export async function releasePassengers(tx: Tx, key: QueueKey, passengerIds: string[]): Promise<Set<string>> {
     const leaving = await tx.passenger.findMany({
@@ -111,6 +114,7 @@ export async function releasePassengers(tx: Tx, key: QueueKey, passengerIds: str
         await tx.passenger.update({ where: { id: head.id }, data: { status: "CONFIRMED", racNumber: null, waitlistNumber: null } });
         await tx.seatAllocation.create({ data: { scheduleId: key.scheduleId, seatId: seat.id, passengerId: head.id } });
         moved.add(head.bookingId);
+        passengersPromoted.inc({ to: "CONFIRMED" });
         berths -= 1;
     }
 
@@ -122,6 +126,7 @@ export async function releasePassengers(tx: Tx, key: QueueKey, passengerIds: str
         if (!head) break;
         await tx.passenger.update({ where: { id: head.id }, data: { status: "RAC", racNumber: 1_000_000 + racCount, waitlistNumber: null } });
         moved.add(head.bookingId);
+        passengersPromoted.inc({ to: "RAC" });
         racCount += 1;
     }
 
