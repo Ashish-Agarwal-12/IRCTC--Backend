@@ -1,13 +1,36 @@
 import { randomUUID } from "node:crypto";
 import express, { Router } from "express";
 import { pinoHttp } from "pino-http";
+import swaggerUi from "swagger-ui-express";
+import { env } from "./config/env.js";
 import { logger, redactUrl } from "./shared/logger.js";
 import { errorHandler, notFoundHandler } from "./shared/error-handler.js";
 import { authenticate, requireRole } from "./shared/middleware/authenticate.js";
+import { buildOpenApiDocument } from "./docs/openapi.js";
+import { adminSystemRouter, systemRouter } from "./modules/system/system.routes.js";
 import { authRouter } from "./modules/auth/auth.routes.js";
 import { authPagesRouter } from "./modules/auth/auth.pages.js";
 import { adminStationsRouter, stationsRouter } from "./modules/stations/stations.routes.js";
 import { adminTrainsRouter, trainsRouter } from "./modules/trains/trains.routes.js";
+
+// Where each router is mounted. Kept as data (rather than a list of app.use calls) so the
+// route-coverage test can list every real route and compare it with the API docs: Express 5
+// doesn't remember mount paths, so this table is the only place they're written down.
+export const publicMounts: { path: string; router: Router }[] = [
+    { path: "/", router: systemRouter },
+    { path: "/auth", router: authRouter },
+    { path: "/", router: authPagesRouter }, // GET /verify-email and /reset-password, opened from email links
+    { path: "/stations", router: stationsRouter },
+    { path: "/trains", router: trainsRouter },
+];
+
+// Everything in here sits behind one admin guard (see buildApp), so no admin route can
+// accidentally be left unprotected.
+export const adminMounts: { path: string; router: Router }[] = [
+    { path: "/", router: adminSystemRouter },
+    { path: "/stations", router: adminStationsRouter },
+    { path: "/trains", router: adminTrainsRouter },
+];
 
 export function buildApp() {
     const app = express();
@@ -34,26 +57,28 @@ export function buildApp() {
     }));
     app.use(express.json());
 
-    app.get("/health", (_req, res) => {
-        res.json({ status: "ok" });
-    });
+    // API docs: the raw OpenAPI document, and Swagger UI to read it and try requests.
+    // Not exposed in production, where the API's shape is nobody else's business by default.
+    if (env.NODE_ENV !== "production") {
+        const openApiDocument = buildOpenApiDocument();
+        app.get("/openapi.json", (_req, res) => {
+            res.json(openApiDocument);
+        });
+        app.use("/docs", swaggerUi.serve, swaggerUi.setup(openApiDocument, {
+            customSiteTitle: "IRCTC API docs",
+            swaggerOptions: { persistAuthorization: true }, // keep the pasted token across page reloads
+        }));
+    }
 
-    app.use("/auth", authRouter);
-    app.use(authPagesRouter); // GET /verify-email and /reset-password, opened from email links
+    for (const { path, router } of publicMounts) {
+        app.use(path, router);
+    }
 
-    // Public catalog
-    app.use("/stations", stationsRouter);
-    app.use("/trains", trainsRouter);
-
-    // Admin: one router, guarded once. Everything mounted inside it needs an ADMIN token, so no
-    // admin route can accidentally be left unprotected.
     const admin = Router();
     admin.use(authenticate, requireRole("ADMIN"));
-    admin.get("/ping", (_req, res) => {
-        res.json({ status: "ok", admin: true });
-    });
-    admin.use("/stations", adminStationsRouter);
-    admin.use("/trains", adminTrainsRouter);
+    for (const { path, router } of adminMounts) {
+        admin.use(path, router);
+    }
     app.use("/admin", admin);
 
     // Must be registered after every route: the 404 catches anything unmatched,

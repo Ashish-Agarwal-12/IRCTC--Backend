@@ -4,9 +4,11 @@ import { buildApp } from "../src/app.js";
 import { prisma } from "../src/shared/prisma.js";
 import { signAccessToken } from "../src/modules/auth/tokens.js";
 import type { Role } from "../src/generated/prisma/client.js";
+import { withContractChecks } from "./contract.js";
 
 // One app instance for all tests. Supertest calls it directly, with no real port or running server.
-export const app = buildApp();
+// Wrapped so every response is checked against the API docs (see contract.ts).
+export const app = withContractChecks(buildApp());
 export const api = () => request(app);
 
 // Empty every table (except Prisma's migration history) so each test starts from a clean slate.

@@ -38,6 +38,15 @@ TypeScript · Express 5 · PostgreSQL 16 · Prisma 7 (with `@prisma/adapter-pg`)
    curl http://localhost:3000/health
    ```
 
+## API docs (Swagger)
+
+With the server running (any environment except production):
+
+- **http://localhost:3000/docs**: Swagger UI. Browse every endpoint with its request and response shapes, and send real requests with **Try it out**. For protected endpoints, call `POST /auth/login`, copy `accessToken`, click **Authorize** and paste it. Use the seeded admin for `/admin/*`.
+- **http://localhost:3000/openapi.json**: the raw OpenAPI 3.1 document. Import it into Postman or Insomnia, or generate a client from it.
+
+The document is generated from code ([src/docs/](src/docs/)). Request shapes are the same Zod schemas the controllers validate with, so they can't drift. Response shapes are strict Zod schemas that the test suite checks **every real response** against (see [test/contract.ts](test/contract.ts)). A test also fails if a route exists without docs, or the docs list a route that doesn't exist. **When you add an endpoint, add it to `src/docs/operations.ts`.**
+
 ## Scripts
 
 | Command | What it does |
@@ -95,6 +104,11 @@ src/
     trains.service.ts    # trains, routes, coaches
     schedules.service.ts # dated schedules + seat inventory per class/quota
     seat-layout.ts       # berth layouts per coach class (SL, 3A, 2A, 1A, CC)
+  modules/system/        # /health and /admin/ping
+  docs/
+    operations.ts        # every endpoint: method, path, request schemas, responses
+    responses.ts         # strict Zod schemas of every JSON response
+    openapi.ts           # builds the OpenAPI document (served at /openapi.json and /docs)
   shared/
     validation.ts        # shared Zod pieces: pagination, ids, station codes, HH:mm, dates
     error.ts             # AppError and subclasses
@@ -107,7 +121,7 @@ src/
       rate-limit.ts      # createRateLimiter(limit, windowMs)
   types/express.d.ts     # adds req.user to Express's Request type
   generated/prisma/      # generated Prisma client (git-ignored)
-test/                    # Vitest + Supertest suites, helpers, test-DB setup
+test/                    # Vitest + Supertest suites, helpers, test-DB setup, API contract checks
 docs/requirements.md     # requirements, design, roadmap, status
 ```
 
@@ -125,6 +139,7 @@ docs/requirements.md     # requirements, design, roadmap, status
 
 | Method | Path | Status |
 |---|---|---|
+| `GET` | `/docs`, `/openapi.json` | Swagger UI and the OpenAPI document (not served in production) |
 | `GET` | `/health` | Available |
 | `POST` | `/auth/register` | `{ email, password, firstName, lastName, phone? }` → 201 `{ user }`, sends verification email |
 | `POST` | `/auth/verify-email` | `{ token }` → 204 |
