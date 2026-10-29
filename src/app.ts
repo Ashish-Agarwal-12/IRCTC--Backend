@@ -12,6 +12,7 @@ import { authRouter } from "./modules/auth/auth.routes.js";
 import { authPagesRouter } from "./modules/auth/auth.pages.js";
 import { adminStationsRouter, stationsRouter } from "./modules/stations/stations.routes.js";
 import { adminTrainsRouter, trainsRouter } from "./modules/trains/trains.routes.js";
+import { bookingsRouter } from "./modules/bookings/bookings.routes.js";
 
 // Where each router is mounted. Kept as data (rather than a list of app.use calls) so the
 // route-coverage test can list every real route and compare it with the API docs: Express 5
@@ -22,6 +23,7 @@ export const publicMounts: { path: string; router: Router }[] = [
     { path: "/", router: authPagesRouter }, // GET /verify-email and /reset-password, opened from email links
     { path: "/stations", router: stationsRouter },
     { path: "/trains", router: trainsRouter },
+    { path: "/bookings", router: bookingsRouter }, // all routes need a logged-in user (see bookings.routes.ts)
 ];
 
 // Everything in here sits behind one admin guard (see buildApp), so no admin route can

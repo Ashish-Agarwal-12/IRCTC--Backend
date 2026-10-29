@@ -14,6 +14,7 @@ import {
     availabilityQuerySchema, createTrainSchema, generateSchedulesSchema, replaceCoachesSchema, replaceRouteSchema,
     scheduleIdParamSchema, searchTrainsSchema, trainNumberParamSchema,
 } from "../modules/trains/trains.schemas.js";
+import { createBookingSchema, idempotencyHeaderSchema, pnrParamSchema } from "../modules/bookings/bookings.schemas.js";
 import { idParamSchema, paginationSchema } from "../shared/validation.js";
 import * as R from "./responses.js";
 
@@ -30,6 +31,7 @@ export interface Operation {
     body?: z.ZodType;
     query?: z.ZodObject;
     params?: z.ZodObject;
+    headers?: z.ZodObject;
     // Success responses (and endpoint-specific errors). Standard errors are added automatically.
     responses: Record<number, { description: string; schema?: z.ZodType; html?: boolean }>;
 }
@@ -171,6 +173,47 @@ export const operations: Operation[] = [
             400: error("Invalid input, a station not on the route (`STATION_NOT_ON_ROUTE`) or `to` not after `from` (`INVALID_JOURNEY`)"),
             404: error("No such schedule"),
         },
+    },
+
+    // ------------------------------------------------------------------- bookings
+    {
+        method: "post", path: "/bookings", tag: "Bookings", summary: "Hold seats (10 minutes) for up to 6 passengers", auth: "user", rateLimited: true,
+        description:
+            "Allots each passenger in order: a confirmed berth while any are left, then RAC, then a waitlist number, so one " +
+            "booking can be split (e.g. 2 CONFIRMED + 1 RAC). Refused (409 `REGRET`) if not everyone fits. The booking is " +
+            "`PENDING_PAYMENT` until `holdExpiresAt`; unpaid holds then become `EXPIRED` and their seats are released. " +
+            "Needs a verified email. Retrying with the same `Idempotency-Key` returns the original booking (200) instead of booking again.",
+        headers: idempotencyHeaderSchema,
+        body: createBookingSchema.meta({
+            id: "CreateBookingRequest",
+            example: {
+                scheduleId: "paste a scheduleId from GET /trains/search",
+                from: "NDLS", to: "MMCT", class: "AC3", quota: "GENERAL",
+                passengers: [
+                    { name: "Asha Kumar", age: 34, gender: "FEMALE", berthPreference: "LOWER" },
+                    { name: "Ravi Kumar", age: 36, gender: "MALE" },
+                ],
+                contactPhone: "9876543210",
+            },
+        }),
+        responses: {
+            201: { description: "Seats held", schema: R.bookingResponse },
+            200: { description: "Same Idempotency-Key as an earlier request: that booking, unchanged", schema: R.bookingResponse },
+            400: error("Invalid input, quota eligibility, `STATION_NOT_ON_ROUTE`, `INVALID_JOURNEY`, `QUOTA_NOT_AVAILABLE` or `CONTACT_PHONE_REQUIRED`"),
+            403: error("Email not verified (`EMAIL_NOT_VERIFIED`)"),
+            404: error("No such schedule"),
+            409: error("`REGRET` (no berths, RAC or waitlist left), `BOOKING_CLOSED` or `FARE_NOT_SET`"),
+        },
+    },
+    {
+        method: "get", path: "/bookings", tag: "Bookings", summary: "Your bookings, newest first", auth: "user",
+        query: paginationSchema,
+        responses: { 200: { description: "One page of bookings", schema: R.bookingListResponse } },
+    },
+    {
+        method: "get", path: "/bookings/{pnr}", tag: "Bookings", summary: "One of your bookings by PNR (PNR status)", auth: "user",
+        params: pnrParamSchema,
+        responses: { 200: { description: "The booking", schema: R.bookingResponse }, 404: error("No such booking among yours") },
     },
 
     // ------------------------------------------------------------------- admin

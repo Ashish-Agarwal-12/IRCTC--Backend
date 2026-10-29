@@ -106,6 +106,11 @@ src/
     seat-layout.ts       # berth layouts per coach class (SL, 3A, 2A, 1A, CC)
     search.service.ts    # train search between stations + per-schedule availability
     availability.ts      # pure rules: AVL / RAC / WL / REGRET status, fares (incl. Tatkal)
+  modules/bookings/
+    bookings.service.ts  # create (locked, idempotent), list, get by PNR
+    inventory.ts         # row locks on SeatInventory + releasing expired holds
+    seat-picking.ts      # pure: choose berths (preferences, keep the party together)
+    hold-expiry.ts       # background sweeper that expires unpaid holds
   modules/system/        # /health and /admin/ping
   docs/
     operations.ts        # every endpoint: method, path, request schemas, responses
@@ -158,6 +163,9 @@ docs/requirements.md     # requirements, design, roadmap, status
 | `GET` | `/trains/search?from=NDLS&to=MMCT&date=2026-11-01&quota=GENERAL` | Trains from `from` to `to` boarding on `date`, with fare and availability per class (`AVL 42`, `RAC 3`, `WL 24`, `REGRET`) |
 | `GET` | `/trains/:number` | Train with route (clock times + day offset) and coaches |
 | `GET` | `/trains/:scheduleId/availability?from=KOTA&to=MMCT` | Every class and quota of one schedule, with fares for that part of the route (default: whole route) |
+| `POST` | `/bookings` | Auth + verified email + `Idempotency-Key` header. `{ scheduleId, from, to, class, quota?, passengers: [{ name, age, gender, berthPreference? }] (1–6), contactPhone? }` → 201 booking `PENDING_PAYMENT` with a 10-minute hold; each passenger CONFIRMED (with berth), RAC n or WL n. Same key again → 200 with the same booking. 409 `REGRET` if full. |
+| `GET` | `/bookings?page=1` | Auth. Your bookings, newest first |
+| `GET` | `/bookings/:pnr` | Auth. One of your bookings (PNR status); someone else's PNR is a 404 |
 | `POST` | `/admin/stations` | `{ code, name, city }` → 201; 409 if the code exists |
 | `PATCH` | `/admin/stations/:id` | `{ name?, city? }` (code can't change) |
 | `POST` | `/admin/trains` | `{ number, name, runningDays: ["MON", ...], departureTime: "16:55" }` → 201 |

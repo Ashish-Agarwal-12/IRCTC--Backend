@@ -1,6 +1,6 @@
-// Pure rules for what a passenger sees before booking: the availability status of a class/quota
-// and its fare. No database access, so they're cheap to unit-test, and Phase 4 (booking) reuses
-// the same rules when it decides whether a passenger gets a berth, RAC or a waitlist number.
+// Pure rules for availability and fares. Search uses them to show "AVL 42" / "RAC 3" / "WL 24", and
+// booking uses the same allotPassengers() to decide what each passenger actually gets, so the two
+// can't disagree. No database access, so they're cheap to unit-test.
 
 import type { CoachClass, FareRule, Quota, ScheduleStatus } from "../../generated/prisma/client.js";
 
@@ -30,22 +30,53 @@ export interface InventoryCounters {
     waitlistIssued: number;
 }
 
-// The order matters, and it's the order booking will fill things in: confirmed berths first, then
-// RAC (half a berth), then the waitlist, then nothing.
+// What the next passenger would get from this inventory, in the order seats are handed out:
+// a confirmed berth first, then RAC (half a berth), then a waitlist number, then nothing (null).
+export type Allotment =
+    | { status: "CONFIRMED" }
+    | { status: "RAC"; racNumber: number }
+    | { status: "WAITLISTED"; waitlistNumber: number };
+
+function nextAllotment(inventory: InventoryCounters): Allotment | null {
+    if (inventory.availableSeats > 0) return { status: "CONFIRMED" };
+    if (inventory.racBooked < inventory.racCapacity) return { status: "RAC", racNumber: inventory.racBooked + 1 };
+    if (inventory.waitlistIssued < WAITLIST_LIMIT) return { status: "WAITLISTED", waitlistNumber: inventory.waitlistIssued + 1 };
+    return null;
+}
+
+// Allots `count` passengers one by one, so one party can be split (e.g. 2 CONFIRMED + 1 RAC 1).
+// Returns the allotments and the counters to write back, or null if even the waitlist can't take
+// everyone: then the whole booking is refused rather than leaving part of the party behind.
+// Booking calls this on counters it has locked (see bookings.service.ts); it never touches the DB.
+export function allotPassengers(inventory: InventoryCounters, count: number) {
+    const counters = { ...inventory };
+    const allotments: Allotment[] = [];
+    for (let i = 0; i < count; i++) {
+        const next = nextAllotment(counters);
+        if (!next) return null;
+        allotments.push(next);
+        if (next.status === "CONFIRMED") counters.availableSeats -= 1;
+        else if (next.status === "RAC") counters.racBooked += 1;
+        else counters.waitlistIssued += 1;
+    }
+    return { allotments, counters };
+}
+
+// The same rule, phrased for search results. Built on nextAllotment, so what search shows is what
+// booking would do.
 export function availabilityOf(inventory: InventoryCounters, bookable: boolean): Availability {
     if (!bookable) return { status: "BOOKING_CLOSED", count: null, label: "BOOKING CLOSED" };
-    if (inventory.availableSeats > 0) {
-        return { status: "AVAILABLE", count: inventory.availableSeats, label: `AVL ${inventory.availableSeats}` };
+    const next = nextAllotment(inventory);
+    switch (next?.status) {
+        case "CONFIRMED":
+            return { status: "AVAILABLE", count: inventory.availableSeats, label: `AVL ${inventory.availableSeats}` };
+        case "RAC":
+            return { status: "RAC", count: next.racNumber, label: `RAC ${next.racNumber}` };
+        case "WAITLISTED":
+            return { status: "WAITLIST", count: next.waitlistNumber, label: `WL ${next.waitlistNumber}` };
+        default:
+            return { status: "REGRET", count: null, label: "REGRET" };
     }
-    if (inventory.racBooked < inventory.racCapacity) {
-        const next = inventory.racBooked + 1;
-        return { status: "RAC", count: next, label: `RAC ${next}` };
-    }
-    if (inventory.waitlistIssued < WAITLIST_LIMIT) {
-        const next = inventory.waitlistIssued + 1;
-        return { status: "WAITLIST", count: next, label: `WL ${next}` };
-    }
-    return { status: "REGRET", count: null, label: "REGRET" };
 }
 
 // A schedule can be booked until its chart is prepared (Phase 9), and never for a past date.
