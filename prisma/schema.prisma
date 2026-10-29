@@ -1,6 +1,6 @@
 generator client {
   provider = "prisma-client"
-  output   = "../generated/prisma"
+  output   = "../src/generated/prisma"
 }
 
 datasource db {
@@ -44,6 +44,12 @@ enum BerthType {
   AISLE
 }
 
+enum Gender {
+  MALE
+  FEMALE
+  TRANSGENDER
+}
+
 enum PassengerStatus {
   CONFIRMED
   RAC
@@ -63,7 +69,7 @@ model Passenger {
   bookingId       String
   name            String
   age             Int
-  gender          String
+  gender          Gender
   requestedBerth  BerthType?
   status          PassengerStatus
   racNumber       Int?
@@ -136,7 +142,7 @@ model TrainSchedule {
   status                ScheduleStatus  @default(SCHEDULED)
   createdAt             DateTime        @default(now())
   updatedAt             DateTime        @updatedAt
-  chartPreparedAt       DateTime
+  chartPreparedAt       DateTime?       // set by the chart-preparation job; null until then
   inventories           SeatInventory[]
   bookings              Booking[]
   allocations           SeatAllocation[]
