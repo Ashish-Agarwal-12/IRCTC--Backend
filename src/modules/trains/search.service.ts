@@ -22,7 +22,16 @@ export function moment(journeyDate: Date, trainDepartureMinutes: number, minutes
     };
 }
 
-const byClassOrder = (a: { class: CoachClass }, b: { class: CoachClass }) =>
+// Timetable clock times are Indian Standard Time (UTC+05:30, no daylight saving). journeyDate is
+// stored as midnight UTC of that calendar day, so midnight IST is 5 h 30 min earlier.
+const IST_OFFSET_MINUTES = 330;
+
+// The same moment as an absolute instant, for "how long until departure" (refund rules, chart time).
+export function departureInstant(journeyDate: Date, trainDepartureMinutes: number, minutesAfterDeparture: number): Date {
+    return new Date(journeyDate.getTime() + (trainDepartureMinutes + minutesAfterDeparture - IST_OFFSET_MINUTES) * 60_000);
+}
+
+const byClassOrder =(a: { class: CoachClass }, b: { class: CoachClass }) =>
     CLASS_ORDER.indexOf(a.class) - CLASS_ORDER.indexOf(b.class);
 
 async function fareRulesByClass() {

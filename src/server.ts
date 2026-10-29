@@ -5,6 +5,7 @@ import { prisma } from "./shared/prisma.js";
 import { startHoldSweeper } from "./modules/bookings/hold-expiry.js";
 import { startPaymentReconciler } from "./modules/payments/reconciliation.js";
 import { startOutboxWorker } from "./modules/notifications/outbox.js";
+import { startChartJob } from "./modules/bookings/chart.js";
 
 const app = buildApp();
 
@@ -19,6 +20,8 @@ const stopReconciler = env.RAZORPAY_KEY_ID ? startPaymentReconciler() : () => {}
 if (!env.RAZORPAY_KEY_ID) logger.warn("RAZORPAY_KEY_ID is empty: payments are disabled");
 // Sends ticket and refund emails written by confirmed / refunded payments (see outbox.ts).
 const stopOutboxWorker = startOutboxWorker();
+// Prepares charts 4 h before departure and cancels what is still waitlisted (see chart.ts).
+const stopChartJob = startChartJob();
 
 // Graceful shutdown: on deploy/restart the platform sends SIGTERM. Stop accepting new connections,
 // let in-flight requests (e.g. a booking mid-transaction) finish, then close the DB pool.
@@ -38,6 +41,7 @@ function shutdown(signal: string) {
     stopHoldSweeper();
     stopReconciler();
     stopOutboxWorker();
+    stopChartJob();
 
     server.close(async (err) => {
         await prisma.$disconnect();

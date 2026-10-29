@@ -9,13 +9,13 @@ beforeEach(async () => {
 });
 
 describe("availability rules", () => {
-    const counters = { availableSeats: 0, racCapacity: 8, racBooked: 0, waitlistIssued: 0 };
+    const counters = { availableSeats: 0, racCapacity: 8, racBooked: 0, waitlistBooked: 0 };
 
     it("fills berths, then RAC, then the waitlist, then refuses", () => {
         expect(availabilityOf({ ...counters, availableSeats: 42 }, true)).toEqual({ status: "AVAILABLE", count: 42, label: "AVL 42" });
         expect(availabilityOf({ ...counters, racBooked: 2 }, true)).toEqual({ status: "RAC", count: 3, label: "RAC 3" });
-        expect(availabilityOf({ ...counters, racBooked: 8, waitlistIssued: 23 }, true)).toMatchObject({ status: "WAITLIST", label: "WL 24" });
-        expect(availabilityOf({ ...counters, racBooked: 8, waitlistIssued: WAITLIST_LIMIT }, true).status).toBe("REGRET");
+        expect(availabilityOf({ ...counters, racBooked: 8, waitlistBooked: 23 }, true)).toMatchObject({ status: "WAITLIST", label: "WL 24" });
+        expect(availabilityOf({ ...counters, racBooked: 8, waitlistBooked: WAITLIST_LIMIT }, true).status).toBe("REGRET");
         expect(availabilityOf({ ...counters, availableSeats: 42 }, false).status).toBe("BOOKING_CLOSED");
     });
 
@@ -148,7 +148,7 @@ describe("GET /trains/:scheduleId/availability", () => {
 
         await prisma.seatInventory.update({ where, data: { availableSeats: 0, racBooked: 5 } });
         expect(await ac3General()).toBe("RAC 6");
-        await prisma.seatInventory.update({ where, data: { racBooked: 8, waitlistIssued: 23 } });
+        await prisma.seatInventory.update({ where, data: { racBooked: 8, waitlistBooked: 23 } });
         expect(await ac3General()).toBe("WL 24");
     });
 

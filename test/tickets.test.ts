@@ -199,7 +199,7 @@ describe("confirmation and refund emails", () => {
         await deliverOutbox();
         const [, subject, text, attachments] = mockedSendMail.mock.calls[0];
         expect(subject).toBe(`Refund initiated · PNR ${pnr}`);
-        expect(text).toContain("after your 10-minute seat hold had ended");
+        expect(text).toContain("after your seat hold had ended");
         expect(attachments).toEqual([]);
     });
 });

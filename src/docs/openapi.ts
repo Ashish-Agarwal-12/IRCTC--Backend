@@ -44,7 +44,7 @@ export function buildOpenApiDocument() {
         openapi: "3.1.0",
         info: {
             title: "IRCTC Backend API",
-            version: "0.5.0",
+            version: "0.6.0",
             description:
                 "Train reservation API. To call protected endpoints: log in via **POST /auth/login**, copy " +
                 "`accessToken`, click **Authorize** and paste it. Admin endpoints need the seeded admin " +

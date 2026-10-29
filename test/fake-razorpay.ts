@@ -38,14 +38,22 @@ export class FakeRazorpay implements PaymentGateway {
         p.status = "captured";
         return { ...p };
     }
-    async refundPayment(id: string) {
+    refundList = new Map<string, { id: string; amount: number; notes: Record<string, string> }[]>();
+    async refundPayment(id: string, { amount, notes = {} }: { amount?: number; notes?: Record<string, string> } = {}) {
         this.check();
         const p = this.payments.get(id)!;
-        if (p.amountRefunded >= p.amount) throw new GatewayRejectedError("The payment has been fully refunded already");
-        p.amountRefunded = p.amount;
-        p.status = "refunded";
+        const value = amount ?? p.amount - p.amountRefunded;
+        if (value <= 0 || p.amountRefunded + value > p.amount) throw new GatewayRejectedError("The refund amount is more than what is left to refund");
+        p.amountRefunded += value;
+        if (p.amountRefunded === p.amount) p.status = "refunded";
         this.refunds += 1;
-        return { id: `rfnd_fake${++this.counter}` };
+        const refund = { id: `rfnd_fake${++this.counter}`, amount: value, notes };
+        this.refundList.set(id, [...(this.refundList.get(id) ?? []), refund]);
+        return { id: refund.id };
+    }
+    async listRefunds(id: string) {
+        this.check();
+        return [...(this.refundList.get(id) ?? [])];
     }
 
     // What the user does in checkout. Returns what checkout hands the browser on success.

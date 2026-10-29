@@ -14,7 +14,7 @@ import {
     availabilityQuerySchema, createTrainSchema, generateSchedulesSchema, replaceCoachesSchema, replaceRouteSchema,
     scheduleIdParamSchema, searchTrainsSchema, trainNumberParamSchema,
 } from "../modules/trains/trains.schemas.js";
-import { createBookingSchema, idempotencyHeaderSchema, pnrParamSchema } from "../modules/bookings/bookings.schemas.js";
+import { cancelQuerySchema, createBookingSchema, idempotencyHeaderSchema, pnrParamSchema } from "../modules/bookings/bookings.schemas.js";
 import { createOrderSchema, verifyPaymentSchema } from "../modules/payments/payments.schemas.js";
 import { idParamSchema, paginationSchema } from "../shared/validation.js";
 import * as R from "./responses.js";
@@ -217,6 +217,22 @@ export const operations: Operation[] = [
         responses: { 200: { description: "The booking", schema: R.bookingResponse }, 404: error("No such booking among yours") },
     },
     {
+        method: "delete", path: "/bookings/{pnr}", tag: "Bookings", summary: "Cancel a booking, or some of its passengers", auth: "user", rateLimited: true,
+        description:
+            "Refunds follow the cancellation rules (per passenger, by status and time before departure from your boarding station): " +
+            "RAC/WL Rs. 60 clerkage; confirmed berths a flat charge per class (> 48 h), 25% (12–48 h) or 50% (4–12 h), nothing " +
+            "in the last 4 h; confirmed Tatkal nothing. Freed berths go to RAC 1, freed RAC places to WL 1, and every queue " +
+            "position moves up. An unpaid booking can only be cancelled whole.",
+        params: pnrParamSchema,
+        query: cancelQuerySchema,
+        responses: {
+            200: { description: "Cancelled; per-passenger refund breakdown", schema: R.cancellationResponse },
+            400: error("Invalid input, `INVALID_PASSENGERS` or `PARTIAL_CANCEL_UNPAID`"),
+            404: error("No such booking among yours"),
+            409: error("`NOT_CANCELLABLE` (already cancelled or expired) or `CANCELLATION_CLOSED` (train has left)"),
+        },
+    },
+    {
         method: "get", path: "/bookings/{pnr}/ticket.pdf", tag: "Bookings", summary: "Download the e-ticket (PDF)", auth: "user",
         description:
             "Generated from the current booking, so it always shows the latest status. Only for CONFIRMED (paid) bookings. " +
@@ -278,6 +294,18 @@ export const operations: Operation[] = [
     },
 
     // ------------------------------------------------------------------- admin
+    {
+        method: "post", path: "/admin/schedules/{scheduleId}/chart", tag: "Admin: trains", summary: "Prepare a schedule's chart now", auth: "admin",
+        description:
+            "Normally done by a job 4 h before the train leaves its origin. Closes booking and cancels every passenger still " +
+            "waitlisted (refund: fare minus Rs. 60 clerkage). RAC passengers stay on the chart.",
+        params: scheduleIdParamSchema,
+        responses: {
+            200: { description: "Chart prepared", schema: R.chartResponse },
+            404: error("No such schedule"),
+            409: error("`CHART_ALREADY_PREPARED`"),
+        },
+    },
     {
         method: "get", path: "/admin/ping", tag: "Admin", summary: "Check admin access", auth: "admin",
         responses: { 200: { description: "You are an admin", schema: R.adminPingResponse } },

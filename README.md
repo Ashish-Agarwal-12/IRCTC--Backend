@@ -114,6 +114,9 @@ src/
     seat-picking.ts      # pure: choose berths (preferences, keep the party together)
     hold-expiry.ts       # background sweeper that expires unpaid holds
     ticket.ts            # e-ticket: content (pure) + PDF rendering (pdfkit)
+    cancellation.service.ts # cancel a booking or some passengers; refunds + cascade
+    refund-rules.ts      # pure: refund per passenger by status, quota, class, time to departure
+    chart.ts             # chart preparation 4 h before departure (job + admin endpoint)
   modules/notifications/
     outbox.ts            # transactional outbox: queue emails in the DB, worker sends with retries
   modules/payments/      # Razorpay, TEST MODE ONLY
@@ -178,6 +181,7 @@ docs/requirements.md     # requirements, design, roadmap, status
 | `POST` | `/bookings` | Auth + verified email + `Idempotency-Key` header. `{ scheduleId, from, to, class, quota?, passengers: [{ name, age, gender, berthPreference? }] (1–6), contactPhone? }` → 201 booking `PENDING_PAYMENT` with a 10-minute hold; each passenger CONFIRMED (with berth), RAC n or WL n. Same key again → 200 with the same booking. 409 `REGRET` if full. |
 | `GET` | `/bookings?page=1` | Auth. Your bookings, newest first |
 | `GET` | `/bookings/:pnr` | Auth. One of your bookings (PNR status); someone else's PNR is a 404 |
+| `DELETE` | `/bookings/:pnr?passengers=2,3` | Auth. Cancel the whole booking, or only those passengers (paid bookings). Returns the per-passenger refund breakdown. Freed berths go to RAC 1, freed RAC places to WL 1, and every position moves up. 409 once the train has left. |
 | `GET` | `/bookings/:pnr/ticket.pdf` | Auth. Download the e-ticket (PDF) of a paid booking; 409 `TICKET_NOT_AVAILABLE` otherwise. The same PDF is emailed on confirmation (see it in Mailpit, http://localhost:8025). |
 | `POST` | `/payments/orders` | Auth. `{ pnr }` → 201 Razorpay order (`orderId`, `amount`, `keyId`, `prefill` with the booking contact, `checkoutUrl`) for a held booking; 200 with the same order if one is open. 409 `ALREADY_PAID` / `HOLD_EXPIRED`, 503 if Razorpay is down. |
 | `GET` | `/payments/checkout` | Test-mode HTML page: open `checkoutUrl`, choose Netbanking → any bank → **Success** (allow pop-ups). The booking's phone and email are prefilled. |
@@ -189,6 +193,7 @@ docs/requirements.md     # requirements, design, roadmap, status
 | `PUT` | `/admin/trains/:id/route` | `{ stops: [{ stationCode, arrivalMinutes, departureMinutes, distanceKm }] }`. Whole route; times are minutes after origin departure. 409 once bookings exist. |
 | `PUT` | `/admin/trains/:id/coaches` | `{ coaches: [{ code: "B1", class: "AC3" }] }`. Seats are generated from standard layouts. 409 once schedules exist. |
 | `POST` | `/admin/trains/:id/schedules` | `{ from, to }` (YYYY-MM-DD, at most 120 days). Creates schedules on running days plus seat inventory; re-runnable. |
+| `POST` | `/admin/schedules/:scheduleId/chart` | Prepare the chart now (normally a job does it 4 h before departure): closes booking and cancels every passenger still waitlisted, with a refund. |
 | `GET` | `/verify-email`, `/reset-password` | HTML pages opened from email links (`#token=...`); a button or form on the page calls the API |
 
 ### Trying the API from Windows PowerShell

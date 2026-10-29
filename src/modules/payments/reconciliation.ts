@@ -9,6 +9,7 @@ import { prisma } from "../../shared/prisma.js";
 import { startIntervalJob } from "../../shared/interval-job.js";
 import { paymentGateway } from "./gateway.js";
 import { refundOwed, settlePayment } from "./payments.service.js";
+import { processPendingRefunds } from "./refunds.js";
 
 const BATCH = 50;
 // Give the fast paths (verify, webhook) a minute before stepping in.
@@ -48,11 +49,14 @@ export async function reconcilePayments(now = new Date()): Promise<number> {
         }
     }
 
-    // 2. Refunds we owe but couldn't issue yet (gateway was down, or we crashed before calling it).
+    // 2. Whole-payment refunds we owe but couldn't issue yet (gateway was down, or we crashed before calling it).
     const owed = await prisma.payment.findMany({ where: { status: "REFUND_PENDING" }, orderBy: { updatedAt: "asc" }, take: BATCH });
     for (const payment of owed) {
         if (await refundOwed(payment.id)) changed += 1;
     }
+
+    // 3. Cancellation refunds not yet issued.
+    changed += await processPendingRefunds(BATCH);
     return changed;
 }
 
