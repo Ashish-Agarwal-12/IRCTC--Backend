@@ -43,7 +43,7 @@ export function buildOpenApiDocument() {
         openapi: "3.1.0",
         info: {
             title: "IRCTC Backend API",
-            version: "0.3.0",
+            version: "0.4.0",
             description:
                 "Train reservation API. To call protected endpoints: log in via **POST /auth/login**, copy " +
                 "`accessToken`, click **Authorize** and paste it. Admin endpoints need the seeded admin " +
@@ -56,6 +56,7 @@ export function buildOpenApiDocument() {
             { name: "Stations" },
             { name: "Trains" },
             { name: "Bookings", description: "Seat holds (10 minutes, pending payment), your bookings and PNR status" },
+            { name: "Payments", description: "Razorpay, **test mode only**: no real money moves" },
             { name: "Admin" },
             { name: "Admin: stations" },
             { name: "Admin: trains", description: "Typical order: create train → route → coaches → schedules" },

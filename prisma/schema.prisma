@@ -59,6 +59,16 @@ enum BerthType {
   AISLE
 }
 
+// One Payment row per gateway order. A user may open checkout more than once for a booking, so a
+// booking can have several orders; at most one of them confirms it, and money on any other is refunded.
+enum PaymentStatus {
+  CREATED         // order created at the gateway; waiting for the user to pay
+  CAPTURED        // money received, and it confirmed the booking
+  REFUND_PENDING  // money received but the booking couldn't use it (hold expired, already paid): refund owed
+  REFUNDED        // that refund was issued at the gateway
+  EXPIRED         // never paid, and the booking no longer needs it
+}
+
 enum Gender {
   MALE
   FEMALE
@@ -239,10 +249,38 @@ model Booking {
   fromStop    RouteStop     @relation("BookingFrom", fields: [fromStopId], references:[id])
   toStop      RouteStop     @relation("BookingTo", fields: [toStopId], references: [id])
   passengers Passenger[]    
+  payments   Payment[]
   
   @@index([userId])
   @@index([scheduleId])
   @@index([status, holdExpiresAt])
+}
+
+model Payment {
+  id                String          @id @default(uuid())
+  bookingId         String
+  gatewayOrderId    String          @unique   // Razorpay order_..., created by POST /payments/orders
+  gatewayPaymentId  String?         @unique   // Razorpay pay_..., once the user pays
+  refundId          String?                   // Razorpay rfnd_..., once refunded
+  amount            Int                       // paise; always the booking's totalFare
+  currency          String          @default("INR")
+  status            PaymentStatus   @default(CREATED)
+  lastError         String?                   // latest failed attempt, e.g. "Card declined"
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  booking           Booking         @relation(fields: [bookingId], references: [id])
+
+  @@index([bookingId])
+  @@index([status, createdAt])                // the reconciliation job's scan
+}
+
+// Webhook deliveries already processed, keyed by Razorpay's x-razorpay-event-id. Razorpay retries
+// a delivery until it gets a 2xx, so the same event can arrive several times.
+model PaymentEvent {
+  id          String    @id               // x-razorpay-event-id
+  type        String                      // e.g. "payment.captured"
+  receivedAt  DateTime  @default(now())
 }
 
 model SeatAllocation {

@@ -229,3 +229,33 @@ export const bookingListResponse = z
     .strictObject({ items: z.array(booking), page: z.number().int(), pageSize: z.number().int(), total: z.number().int() })
     .meta({ id: "BookingList" });
 
+
+// --------------------------------------------------------------------------- payments
+
+export const paymentOrderResponse = z
+    .strictObject({
+        payment: z.strictObject({
+            orderId: z.string().meta({ example: "order_Nf3kD9xYzQ1a2B" }),
+            amount: z.number().int().meta({ description: "Paise; always the booking's totalFare", example: 229200 }),
+            currency: z.string().meta({ example: "INR" }),
+            keyId: z.string().meta({ description: "Razorpay key id for checkout (test mode: rzp_test_...)" }),
+            pnr: z.string(),
+            holdExpiresAt: z.iso.datetime().meta({ description: "Pay before this" }),
+            prefill: z
+                .strictObject({ contact: z.string(), email: z.string() })
+                .meta({ description: "The booking's contact details, for Razorpay checkout's `prefill` option" }),
+            checkoutUrl: z.url().meta({ description: "Test-mode page that opens Razorpay checkout for this order" }),
+        }),
+    })
+    .meta({ id: "PaymentOrder" });
+
+export const verifyPaymentResponse = z
+    .strictObject({
+        result: z.enum(["CONFIRMED", "REFUND_PENDING", "REFUNDED"]).meta({
+            description: "CONFIRMED: the booking is paid. REFUND_PENDING / REFUNDED: the hold had expired (or the booking was already paid), so the money goes back.",
+        }),
+        booking,
+    })
+    .meta({ id: "VerifyPaymentResult" });
+
+export const webhookResponse = z.strictObject({ handled: z.enum(["processed", "ignored", "duplicate"]) });
