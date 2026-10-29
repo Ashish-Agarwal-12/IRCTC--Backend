@@ -110,7 +110,8 @@ These are conceptual entities for the initial design, not the final database sch
 > - `Passenger.gender` is an enum (`MALE`, `FEMALE`, `TRANSGENDER`) so quota rules (e.g. ladies quota) can rely on it.
 > - `TrainSchedule.chartPreparedAt` is nullable; it stays null until the chart-preparation job runs.
 > - **Known simplification:** inventory and seat allocation are per journey, not per segment. A seat freed after an intermediate station cannot yet be resold for the rest of the route.
-> - **Not yet modelled:** `Payment`, plus the refresh-token and verification-token tables needed for auth.
+> - `RefreshToken` (rotating, grouped by `familyId`) and `VerificationToken` (single-use email-verify / password-reset tokens) support auth. Both store only a SHA-256 hash of the token.
+> - **Not yet modelled:** `Payment`.
 
 ---
 
@@ -189,8 +190,9 @@ _Last updated: 2026-10-29_
 |---|---|
 | 1. Domain model and API contracts | Done: initial schema and migrations in `prisma/` |
 | 2. Project setup | Done, except Redis/BullMQ: containers run via Docker Compose, but no client library is installed or used yet |
-| 3. Authentication and authorization | Next |
-| 4–11 | Not started |
+| 3. Authentication and authorization | Done (see 8.3) |
+| 4. Stations, routes, trains, schedules | Next |
+| 5–11 | Not started |
 
 ### 8.1 Foundations in place (Phase 0)
 
@@ -209,6 +211,26 @@ _Last updated: 2026-10-29_
 |---|---|
 | `20261016115023_init_catalog` | Users, stations, trains, route stops, schedules |
 | `20261016124540_init_catalog` | Coaches, seats, seat inventory, bookings, passengers, seat allocations |
+| `20261029082133_auth_tokens` | `TokenPurpose` enum, `RefreshToken` and `VerificationToken` tables |
 | `20261029120000_catalog_fixes` | `Gender` enum, converted in place with `USING UPPER(...)` so existing rows are kept. Prisma's generated SQL dropped the column instead, so it was hand-edited. Also makes `chartPreparedAt` nullable. |
 
 > Always read generated migration SQL before applying it: a column type change can be generated as drop-and-recreate, which deletes data.
+
+### 8.3 Authentication (Phase 1)
+
+| Decision | Choice | Why |
+|---|---|---|
+| Password hashing | argon2id | Deliberately slow and memory-hard, so stolen hashes are expensive to brute-force. Passwords are capped at 128 characters so huge inputs can't tie up the CPU. |
+| Access token | HS256 JWT, 15 min, `{ sub: userId, role }`, algorithm pinned on verify | Checked without a database lookup. It can't be revoked, so it is kept short-lived. |
+| Refresh token | Random 256-bit opaque token, 7 days, returned in the JSON body, stored as SHA-256 hash | Always checked against the database, so it can be revoked. Hashing means a database leak doesn't leak usable tokens. |
+| Rotation + reuse detection | Each refresh revokes the old token (`updateMany ... where revokedAt is null`) and issues a new one in the same `familyId`. Presenting a revoked token revokes the whole family. | A stolen refresh token stops working as soon as either party uses it twice. The conditional update makes concurrent refreshes safe: only one wins. **Tradeoff:** the losers of a concurrent refresh count as reuse and end the session too. That is strict but safe; a short grace window could be added if clients double-refresh. |
+| Email verification | Required before login (403 `EMAIL_NOT_VERIFIED`). Single-use token, 24 h. | Bookings send tickets and refunds to this address, so it must be real. |
+| Password reset | Single-use token, 30 min. Revokes all refresh tokens and marks the email verified. | Resetting after a compromise must also log the attacker out. |
+| Account enumeration | Same 401 for unknown email and wrong password; dummy argon2 verify for unknown emails; forgot-password and resend-verification always return 202 and send email in the background | Attackers can't use responses or timing to learn who has an account. Register still returns 409 for duplicates, an accepted tradeoff for usable sign-up. |
+| Duplicate sign-ups | The unique index decides (Prisma `P2002` → 409); no check-then-insert | A check-then-insert has a race window. |
+| Rate limits | Login 5/min/IP; register, resend and forgot-password 5/15 min/IP; others 30/min/IP. In memory for now. | Brute-force and email-spam protection. Moves to Redis when there are multiple instances. |
+| Roles | `requireRole(...)` middleware reads the role from the JWT | No DB lookup per request. A role change takes effect within 15 minutes, when the token expires. |
+| Admin creation | `npx prisma db seed` from `ADMIN_EMAIL` / `ADMIN_PASSWORD` | There is no API to become an admin. |
+| Email links | Link to `/verify-email#token=…` or `/reset-password#token=…`. A static page reads the token from the fragment, removes it from the address bar, and POSTs it only when the user clicks or submits. Pages send `Referrer-Policy: no-referrer` and `Cache-Control: no-store`. | The fragment never reaches the server, so tokens can't land in access logs, proxies or Referer headers. Email scanners that pre-open links can't use up the token, because opening the page does nothing on its own. A real frontend would replace these pages. |
+| Secrets in logs | Pino redacts auth and cookie headers, `referer`, `req.query.token` and body-like `*.token` / `*.password` fields; `redactUrl` scrubs `?token=` from logged URLs | Defense in depth for old-style or hand-typed links. |
+| Email delivery | nodemailer → Mailpit in dev; fire-and-forget with error logging | **TODO (BullMQ phase):** move to a queue so failed emails are retried and survive restarts. |

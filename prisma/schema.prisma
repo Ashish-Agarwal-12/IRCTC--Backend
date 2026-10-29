@@ -12,6 +12,11 @@ enum Role {
   ADMIN
 }
 
+enum TokenPurpose {
+  EMAIL_VERIFY
+  PASSWORD_RESET
+}
+
 enum CoachClass {
   SL          // Sleeper
   AC3         // 3rd AC
@@ -90,6 +95,8 @@ model User {
   lastName              String
   role                  Role      @default(USER)
   bookings              Booking[]
+  refreshTokens         RefreshToken[]
+  verificationTokens    VerificationToken[]
   isEmailVerified       Boolean   @default(false)
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
@@ -237,4 +244,38 @@ model SeatAllocation {
   passenger Passenger     @relation(fields: [passengerId], references: [id])
 
   @@unique([scheduleId, seatId])
+}
+
+// One row per issued refresh token. Rotation: every /auth/refresh revokes the presented token and
+// issues a new one in the same family. Presenting an already-revoked token means it was stolen
+// and replayed, so the whole family (that login session) is revoked.
+model RefreshToken {
+  id            String    @id @default(uuid())
+  userId        String
+  tokenHash     String    @unique         // SHA-256 of the token; the raw token is never stored
+  familyId      String                    // shared by every token descended from one login
+  expiresAt     DateTime
+  revokedAt     DateTime?
+  replacedById  String?                   // the token issued when this one was rotated
+  createdAt     DateTime  @default(now())
+
+  user          User      @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([familyId])
+}
+
+// Single-use tokens emailed to the user (verify email, reset password).
+model VerificationToken {
+  id            String        @id @default(uuid())
+  userId        String
+  purpose       TokenPurpose
+  tokenHash     String        @unique
+  expiresAt     DateTime
+  usedAt        DateTime?
+  createdAt     DateTime      @default(now())
+
+  user          User          @relation(fields: [userId], references: [id])
+
+  @@index([userId])
 }

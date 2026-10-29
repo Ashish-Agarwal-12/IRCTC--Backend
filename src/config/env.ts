@@ -8,7 +8,17 @@ const envSchema = z.object({
     PORT: z.coerce.number().default(3000),
     DATABASE_URL: z.string().url(),
     REDIS_URL: z.string().url(),
+
+    // Auth. HS256 is only as strong as its secret, so refuse short ones.
+    JWT_ACCESS_SECRET: z.string().min(32, "JWT_ACCESS_SECRET must be at least 32 characters"),
+    ACCESS_TOKEN_TTL_MINUTES: z.coerce.number().int().positive().default(15),
+    REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(7),
+
+    // Email. Base URL of the frontend that the links in emails point to.
+    APP_URL: z.string().url().default("http://localhost:3000"),
+    SMTP_HOST: z.string().default("localhost"),
+    SMTP_PORT: z.coerce.number().int().default(1025),
+    MAIL_FROM: z.string().default("IRCTC <no-reply@irctc.local>"),
 });
 
 export const env = envSchema.parse(process.env);
-
