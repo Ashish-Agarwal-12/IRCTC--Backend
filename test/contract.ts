@@ -55,7 +55,7 @@ export function withContractChecks(app: Express): Express {
                 contractViolations.push(`${where}: status ${res.statusCode} is not documented for ${op.method.toUpperCase()} ${op.path}`);
                 return;
             }
-            if (documented.html) return;
+            if (documented.html || documented.pdf) return;
             if (!documented.schema) {
                 if (body !== undefined) contractViolations.push(`${where}: documented as having no body, but sent one`);
                 return;

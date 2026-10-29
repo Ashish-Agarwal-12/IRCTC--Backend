@@ -19,6 +19,7 @@ import { bookingInclude, toBookingView } from "../bookings/bookings.service.js";
 import { GatewayRejectedError, fromRazorpay, paymentGateway, type GatewayPayment } from "./gateway.js";
 import { isValidCheckoutSignature, isValidWebhookSignature } from "./signatures.js";
 import { webhookEventSchema, type VerifyPaymentInput } from "./payments.schemas.js";
+import { enqueueNotification } from "../notifications/outbox.js";
 
 // --------------------------------------------------------------------------- 1. order
 
@@ -198,6 +199,8 @@ export async function settlePayment(reported: GatewayPayment): Promise<SettleRes
                 where: { bookingId: booking.id, status: "CREATED", id: { not: payment.id } },
                 data: { status: "EXPIRED" },
             });
+            // Ticket email, committed together with the confirmation (see notifications/outbox.ts).
+            await enqueueNotification(tx, "BOOKING_CONFIRMED", booking.id);
             return { result: "CONFIRMED" as const };
         }
 
@@ -211,6 +214,9 @@ export async function settlePayment(reported: GatewayPayment): Promise<SettleRes
             where: { id: payment.id },
             data: { status: "REFUND_PENDING", gatewayPaymentId: gatewayPayment.id, lastError: reason },
         });
+        // Tell the user why they were charged without getting seats. (A duplicate payment on an
+        // already-confirmed booking is refunded quietly: they have their ticket.)
+        if (booking.status !== "CONFIRMED") await enqueueNotification(tx, "REFUND_INITIATED", booking.id);
         logger.warn({ orderId: payment.gatewayOrderId, reason }, "Payment can't be used; refunding");
         return { result: "REFUND_PENDING" as const, paymentId: payment.id };
     });

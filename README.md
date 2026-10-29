@@ -113,6 +113,9 @@ src/
     inventory.ts         # row locks on SeatInventory + releasing expired holds
     seat-picking.ts      # pure: choose berths (preferences, keep the party together)
     hold-expiry.ts       # background sweeper that expires unpaid holds
+    ticket.ts            # e-ticket: content (pure) + PDF rendering (pdfkit)
+  modules/notifications/
+    outbox.ts            # transactional outbox: queue emails in the DB, worker sends with retries
   modules/payments/      # Razorpay, TEST MODE ONLY
     gateway.ts           # the only code that calls Razorpay (fetch); swappable fake in tests
     signatures.ts        # HMAC checks for checkout and webhook signatures
@@ -175,6 +178,7 @@ docs/requirements.md     # requirements, design, roadmap, status
 | `POST` | `/bookings` | Auth + verified email + `Idempotency-Key` header. `{ scheduleId, from, to, class, quota?, passengers: [{ name, age, gender, berthPreference? }] (1–6), contactPhone? }` → 201 booking `PENDING_PAYMENT` with a 10-minute hold; each passenger CONFIRMED (with berth), RAC n or WL n. Same key again → 200 with the same booking. 409 `REGRET` if full. |
 | `GET` | `/bookings?page=1` | Auth. Your bookings, newest first |
 | `GET` | `/bookings/:pnr` | Auth. One of your bookings (PNR status); someone else's PNR is a 404 |
+| `GET` | `/bookings/:pnr/ticket.pdf` | Auth. Download the e-ticket (PDF) of a paid booking; 409 `TICKET_NOT_AVAILABLE` otherwise. The same PDF is emailed on confirmation (see it in Mailpit, http://localhost:8025). |
 | `POST` | `/payments/orders` | Auth. `{ pnr }` → 201 Razorpay order (`orderId`, `amount`, `keyId`, `prefill` with the booking contact, `checkoutUrl`) for a held booking; 200 with the same order if one is open. 409 `ALREADY_PAID` / `HOLD_EXPIRED`, 503 if Razorpay is down. |
 | `GET` | `/payments/checkout` | Test-mode HTML page: open `checkoutUrl`, choose Netbanking → any bank → **Success** (allow pop-ups). The booking's phone and email are prefilled. |
 | `POST` | `/payments/verify` | `{ razorpay_order_id, razorpay_payment_id, razorpay_signature }` (what checkout returns) → 200 `{ result: CONFIRMED \| REFUND_PENDING \| REFUNDED, booking }`. No login: the signature is checked. 402 if the payment failed. |

@@ -9,6 +9,12 @@ const transport = nodemailer.createTransport({
     secure: false,
 });
 
-export async function sendMail(to: string, subject: string, text: string): Promise<void> {
-    await transport.sendMail({ from: env.MAIL_FROM, to, subject, text });
+export interface Attachment {
+    filename: string;
+    content: Buffer;
+    contentType: string;
+}
+
+export async function sendMail(to: string, subject: string, text: string, attachments: Attachment[] = []): Promise<void> {
+    await transport.sendMail({ from: env.MAIL_FROM, to, subject, text, attachments });
 }

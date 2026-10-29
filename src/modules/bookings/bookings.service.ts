@@ -10,6 +10,7 @@ import { allotPassengers, fareFor, isBookable } from "../trains/availability.js"
 import { moment, resolveJourney } from "../trains/search.service.js";
 import { lockClassInventory, releaseExpiredHolds } from "./inventory.js";
 import { pickSeats } from "./seat-picking.js";
+import { renderTicketPdf, ticketContent } from "./ticket.js";
 import type { CreateBookingInput } from "./bookings.schemas.js";
 
 export const HOLD_MINUTES = 10;
@@ -248,4 +249,25 @@ export async function getBooking(userId: string, pnr: string) {
     const booking = await prisma.booking.findFirst({ where: { pnr, userId }, include: bookingInclude });
     if (!booking) throw new NotFoundError("Booking");
     return toBookingView(booking);
+}
+
+// --------------------------------------------------------------------------- ticket
+
+// The PDF ticket for one of your bookings. Only a CONFIRMED (paid) booking has a ticket.
+export async function getTicketPdf(userId: string, pnr: string) {
+    const booking = await prisma.booking.findFirst({
+        where: { pnr, userId },
+        include: { ...bookingInclude, payments: { where: { status: "CAPTURED" }, select: { gatewayPaymentId: true } } },
+    });
+    if (!booking) throw new NotFoundError("Booking");
+    return { filename: `ticket-${pnr}.pdf`, pdf: await ticketPdfFor(booking) };
+}
+
+// Shared with the confirmation email (notifications/outbox.ts).
+export async function ticketPdfFor(booking: BookingWithDetails & { payments: { gatewayPaymentId: string | null }[] }) {
+    if (booking.status !== "CONFIRMED") {
+        const why = booking.status === "PENDING_PAYMENT" ? "it isn't paid yet" : `it is ${booking.status}`;
+        throw new AppError(409, "TICKET_NOT_AVAILABLE", `No ticket for this booking: ${why}`);
+    }
+    return renderTicketPdf(ticketContent(toBookingView(booking), booking.payments[0]?.gatewayPaymentId ?? null));
 }

@@ -12,3 +12,4 @@ bookingsRouter.use(authenticate);
 bookingsRouter.post("/", bookingLimiter, bookings.create);
 bookingsRouter.get("/", bookings.list);
 bookingsRouter.get("/:pnr", bookings.getByPnr);
+bookingsRouter.get("/:pnr/ticket.pdf", bookings.ticket);

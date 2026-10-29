@@ -69,6 +69,18 @@ enum PaymentStatus {
   EXPIRED         // never paid, and the booking no longer needs it
 }
 
+// Emails we owe the user. Written in the same transaction as the change they report (see OutboxMessage).
+enum NotificationType {
+  BOOKING_CONFIRMED   // ticket PDF attached
+  REFUND_INITIATED    // paid after the hold ran out; the money is going back
+}
+
+enum OutboxStatus {
+  PENDING   // waiting to be sent (or retried at nextAttemptAt)
+  SENT
+  FAILED    // gave up after the maximum attempts; needs a human
+}
+
 enum Gender {
   MALE
   FEMALE
@@ -250,6 +262,7 @@ model Booking {
   toStop      RouteStop     @relation("BookingTo", fields: [toStopId], references: [id])
   passengers Passenger[]    
   payments   Payment[]
+  outbox     OutboxMessage[]
   
   @@index([userId])
   @@index([scheduleId])
@@ -273,6 +286,26 @@ model Payment {
 
   @@index([bookingId])
   @@index([status, createdAt])                // the reconciliation job's scan
+}
+
+// Transactional outbox. "Booking confirmed" and "send the ticket email" must both happen or neither:
+// writing the email as a row in the same transaction as the confirmation guarantees that, and a
+// worker (outbox.ts) delivers the rows afterwards, retrying until it succeeds.
+model OutboxMessage {
+  id             String            @id @default(uuid())
+  type           NotificationType
+  bookingId      String
+  status         OutboxStatus      @default(PENDING)
+  attempts       Int               @default(0)
+  nextAttemptAt  DateTime          @default(now())   // also a lease: pushed ahead while a worker is sending
+  lastError      String?
+  sentAt         DateTime?
+  createdAt      DateTime          @default(now())
+
+  booking        Booking           @relation(fields: [bookingId], references: [id])
+
+  @@index([status, nextAttemptAt])  // the worker's scan
+  @@index([bookingId])
 }
 
 // Webhook deliveries already processed, keyed by Razorpay's x-razorpay-event-id. Razorpay retries

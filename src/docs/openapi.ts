@@ -16,6 +16,7 @@ export function buildOpenApiDocument() {
                     description: r.description,
                     ...(r.schema && { content: { "application/json": { schema: r.schema } } }),
                     ...(r.html && { content: { "text/html": { schema: { type: "string" as const } } } }),
+                    ...(r.pdf && { content: { "application/pdf": { schema: { type: "string" as const, format: "binary" } } } }),
                 },
             ]),
         );
@@ -43,7 +44,7 @@ export function buildOpenApiDocument() {
         openapi: "3.1.0",
         info: {
             title: "IRCTC Backend API",
-            version: "0.4.0",
+            version: "0.5.0",
             description:
                 "Train reservation API. To call protected endpoints: log in via **POST /auth/login**, copy " +
                 "`accessToken`, click **Authorize** and paste it. Admin endpoints need the seeded admin " +
